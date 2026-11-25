@@ -5,9 +5,10 @@ from pathlib import Path
 import sqlite3
 import uuid
 
-from .domain import Season, age_on, apply_competition_scope, current_season
+from .domain import Season, age_on, apply_competition_scope, combine, current_season
 from .ratings import apply_position_adjustment
 from .points import calculate_season_points
+from .weighting import calculate_weighted_rating
 
 
 def now() -> str:
@@ -70,8 +71,22 @@ class Store:
     def _player(row) -> dict | None:
         if row is None:
             return None
-        snapshot = apply_position_adjustment(apply_competition_scope(json.loads(row["snapshot"])))
-        snapshot["season_points"] = calculate_season_points(snapshot)
+        saved = json.loads(row["snapshot"])
+        tm, fm = json.loads(row["tm_json"]), json.loads(row["fm_json"])
+        # Rebuild derived joins from retained source data so fixes also recover
+        # ratings that an older combine() omitted. Reading never rewrites raw
+        # responses, timestamps or the persisted snapshot.
+        if (isinstance(tm.get("profile"), dict) and tm["profile"].get("id")
+                and isinstance(tm.get("competitions"), list) and isinstance(fm.get("competitions"), list)):
+            saved = {**saved, **combine(tm, fm)}
+        snapshot = apply_position_adjustment(apply_competition_scope(saved))
+        weighted = calculate_weighted_rating(snapshot)
+        snapshot["weighted_rating"] = weighted
+        points = calculate_season_points(snapshot, weighted_rating=weighted["rating"])
+        if weighted["rating"] is None:
+            points["status"] = {"missing_history": "awaiting_match_history", "missing_position": "awaiting_position",
+                                "incomplete_context": "awaiting_match_context"}.get(weighted["status"], "awaiting_match_history")
+        snapshot["season_points"] = points
         age_as_of = Season.parse(row["season"]).cutoff
         return {**snapshot, "id": row["id"], "season": row["season"],
                 "age": age_on(snapshot.get("birth_date"), age_as_of), "age_as_of": age_as_of.isoformat(),

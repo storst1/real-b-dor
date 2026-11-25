@@ -6,6 +6,9 @@ import re
 import unicodedata
 from urllib.parse import urlsplit
 
+from .competitions import fotmob_competition_category, is_supercup
+from .match_context import normalize_team
+from .league_outcomes import apply_league_championship
 
 CATEGORIES = [
     {"key": "domestic_league", "label": "Чемпионат"},
@@ -153,7 +156,9 @@ def is_champions_league(row: dict, *, provider: str = "transfermarkt") -> bool:
 
 
 def contributes_to_group(row: dict, group: str) -> bool:
-    return row.get("category") == group and (group != "continental" or is_champions_league(row))
+    return (row.get("category") == group
+            and (group != "continental" or is_champions_league(row))
+            and (group != "domestic_cup" or not is_supercup(row)))
 
 
 def aggregate(rows: list[dict]) -> dict:
@@ -180,7 +185,7 @@ def aggregate(rows: list[dict]) -> dict:
 
 
 def apply_competition_scope(snapshot: dict) -> dict:
-    """Rebuild the CL column while retaining every competition in the total."""
+    """Rebuild displayed groups while retaining every competition in the total."""
     result = deepcopy(snapshot)
     competitions = result.get("competitions")
     if not isinstance(competitions, list):
@@ -188,9 +193,65 @@ def apply_competition_scope(snapshot: dict) -> dict:
     rows = [row for row in competitions if isinstance(row, dict)]
     for row in rows:
         row["is_champions_league"] = is_champions_league(row)
+        row["is_supercup"] = is_supercup(row)
     result["groups"] = {category["key"]: aggregate([row for row in rows if contributes_to_group(row, category["key"])])
                         for category in CATEGORIES}
     result["total"] = aggregate(rows)
+    return result
+
+
+def _fotmob_rows(rows: list[dict], competitions: list[dict]) -> list[dict]:
+    """Repair categories and split verified feeds that merge competition phases.
+
+    FotMob combines MLS regular/playoff games and EURO qualification/playoffs;
+    TM keeps their phases separate. Partition only on unique dated appearances
+    for the same team; unmatched rated games remain missing source data.
+    """
+    merged_phases = {"130": {"MLS1", "POUS"}, "10607": {"EMQ", "POEM"}}
+    result = []
+    for original in rows:
+        rating = deepcopy(original)
+        if category := fotmob_competition_category(rating):
+            rating["category"] = category
+            for match in rating.get("matches", []):
+                if isinstance(match, dict):
+                    match["category"] = category
+                    match["is_national"] = (category in {"national_regular", "national_major"}
+                                            or str(rating.get("id")) == "66")
+        history = rating.get("matches")
+        phase_ids = merged_phases.get(str(rating.get("id")), set())
+        targets = [row for row in competitions if str(row.get("id")) in phase_ids
+                   and normalize_team(row.get("team")) == normalize_team(rating.get("team"))]
+        if not phase_ids or not history or not targets:
+            result.append(rating)
+            continue
+        partitions = {str(row["id"]): [] for row in targets}
+        unmatched = []
+        for match in history:
+            day = str(match.get("date") or "")[:10] if isinstance(match, dict) else ""
+            selected = [row for row in targets if day and any(
+                str(tm_match.get("date") or "")[:10] == day for tm_match in row.get("matches", []))]
+            if len(selected) == 1:
+                partitions[str(selected[0]["id"])].append(match)
+            else:
+                unmatched.append(match)
+        for target in targets:
+            matches = partitions.pop(str(target["id"]), [])
+            if not matches:
+                continue
+            values = [m["rating"] for m in matches if _numeric(m.get("rating")) and 0 < m["rating"] <= 10]
+            result.append({**rating, "category": target.get("category"), "matches": matches,
+                           "games": len(matches), "rated_games": len(values),
+                           "rating": math.fsum(values) / len(values) if values else None,
+                           "target_competition_id": str(target["id"])})
+        available = sum(_numeric(m.get("rating")) and 0 < m["rating"] <= 10 for m in history if isinstance(m, dict))
+        expected = rating.get("rated_games")
+        if unmatched or (_numeric(expected) and expected > available):
+            values = [m["rating"] for m in unmatched if isinstance(m, dict) and _numeric(m.get("rating")) and 0 < m["rating"] <= 10]
+            missing = max(0, expected - available) if _numeric(expected) else 0
+            result.append({**rating, "matches": unmatched, "partition_unmatched": True,
+                           "rated_games": len(values) + missing,
+                           "rating": math.fsum(values) / len(values) if values else rating.get("rating")})
     return result
 
 
@@ -201,9 +262,13 @@ def combine(tm: dict, fm: dict) -> dict:
     for item in tm.get("competitions", []):
         competitions.append({**item, "rating": None, "rated_games": None, "sources": ["Transfermarkt"]})
     used = set()
-    for rating in fm.get("competitions", []):
+    unmatched = []
+    for rating in _fotmob_rows(fm.get("competitions", []), competitions):
+        target = rating.get("target_competition_id")
         category_rows = [(i, row) for i, row in enumerate(competitions) if i not in used
-                         and row.get("category") == rating.get("category")]
+                         and row.get("category") == rating.get("category")
+                         and (target is None or str(row.get("id")) == target)
+                         and not rating.get("partition_unmatched")]
         candidates = [(i, row) for i, row in category_rows
                       if _key(row.get("team")) == _key(rating.get("team")) or not rating.get("team")]
         exact = [(i, r) for i, r in candidates if _key(r.get("name")) == _key(rating.get("name"))]
@@ -222,8 +287,15 @@ def combine(tm: dict, fm: dict) -> dict:
             if selected_exact:
                 selected = selected_exact
         if len(selected) != 1:
-            if rating.get("rating") is not None:
+            sample = rating.get("rated_games")
+            rated_history = sum(isinstance(m, dict) and _numeric(m.get("rating")) and 0 < m["rating"] <= 10
+                                for m in rating.get("matches", []))
+            if (rating.get("rating") is not None or (_numeric(sample) and sample > 0) or rated_history):
                 warnings.append(f"Оценка FotMob для «{rating.get('name', 'Турнир')}» не включена: турнир или команда не сопоставлены однозначно.")
+                unmatched.append({"code": "missing_source_sample", "competition_id": rating.get("id"),
+                                  "competition": rating.get("name"), "expected_rated_games": sample if _numeric(sample) else rated_history or None,
+                                  "available_rated_games": 0,
+                                  "reason": "Матчи FotMob не сопоставлены с турниром Transfermarkt."})
             continue
         i, row = selected[0]
         used.add(i)
@@ -234,10 +306,12 @@ def combine(tm: dict, fm: dict) -> dict:
             row["place"] = str(rating["place"])
         if rating.get("games") is not None and row.get("games") != rating["games"]:
             warnings.append(f"«{row['name']}»: Transfermarkt — {row.get('games')} матчей, FotMob — {rating['games']}. В таблице матчи Transfermarkt; оценка — по доступным матчам FotMob.")
+    competitions = apply_league_championship(competitions)
     profile = tm["profile"]
     return apply_competition_scope({**profile, "transfermarkt_id": str(profile["id"]),
             "transfermarkt_url": f"https://www.transfermarkt.com/-/profil/spieler/{profile['id']}",
             "fotmob_id": fm.get("player_id"), "fotmob_url": fm.get("profile_url"),
             "fotmob_status": fm.get("status", "unavailable"), "fotmob_candidates": fm.get("candidates", []),
             "market_value": tm.get("market_value"), "competitions": competitions,
+            "unmatched_fotmob_competitions": unmatched,
             "warnings": list(dict.fromkeys(warnings))})

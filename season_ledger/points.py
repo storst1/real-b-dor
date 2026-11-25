@@ -5,15 +5,27 @@ import re
 import unicodedata
 
 from .domain import is_champions_league
+from .competitions import is_supercup
+from .league_outcomes import apply_league_championship
 
 
-FORMULA_VERSION = "1"
+FORMULA_VERSION = "6"
+# Transfermarkt IDs verified against saved competition snapshots. IDs keep
+# similarly named leagues and lower divisions outside the championship bonus.
+TOP_FIVE_LEAGUE_IDS = {"GB1", "FR1", "ES1", "IT1", "L1"}
 BONUS_RULES = {
-    "league": {"winner": 300},
-    "champions_league": {"winner": 500, "runner_up": 300, "semifinal": 100},
-    "cup": {"winner": 100},
-    "world_cup": {"winner": 650, "runner_up": 350, "semifinal": 150},
-    "euro_copa": {"winner": 500, "runner_up": 300, "semifinal": 100},
+    "league": {"winner": 75},
+    "champions_league": {"winner": 150, "runner_up": 100, "semifinal": 50, "quarterfinal": 25},
+    "cup": {"winner": 25},
+    "world_cup": {"winner": 175, "runner_up": 50, "semifinal": 25},
+    "euro_copa": {"winner": 150, "runner_up": 50},
+}
+BONUS_MIN_GAMES = {
+    "league": 15,
+    "champions_league": 5,
+    "cup": 1,
+    "world_cup": 3,
+    "euro_copa": 3,
 }
 
 
@@ -27,19 +39,19 @@ def _name(value) -> str:
 
 
 def _kind(row: dict) -> str | None:
+    if is_supercup(row):
+        return None
     category = row.get("category")
     if category == "domestic_league":
-        return "league"
+        return "league" if str(row.get("id") or "").strip() in TOP_FIVE_LEAGUE_IDS else None
     if category == "continental":
         return "champions_league" if is_champions_league(row) else None
     if category == "domestic_cup":
         kind = row.get("competition_type_id")
-        if kind in (9, 15, 23):  # Supercups and youth cups have no bonus.
+        if kind == 15:  # Youth cups have no bonus; supercups were excluded above.
             return None
         name = _name(row.get("name"))
-        if any(term in name for term in ("supercup", "super cup", "supercopa", "supercoppa", "supercoupe",
-                                         "super coupe", "supertaca", "community shield", "charity shield",
-                                         "trophee des champions", "youth", "u19", "u21")):
+        if any(term in name for term in ("youth", "u19", "u21")):
             return None
         return "cup" if kind in (None, 8, 14) else None
     if category == "national_major":
@@ -70,6 +82,8 @@ def _outcome(row: dict) -> tuple[str | None, str | None]:
         return None, "Исход финала не подтверждён источником."
     if outcome == "semifinal" or place in {"Полуфинал", "1/2 финала"} or stages.intersection({"HF", "HFH", "HFR"}):
         return "semifinal", None
+    if outcome == "quarterfinal" or place in {"Четвертьфинал", "1/4 финала"} or stages.intersection({"VF", "VFH", "VFR"}):
+        return "quarterfinal", None
     return None, None
 
 
@@ -79,15 +93,24 @@ def calculate_season_points(snapshot: dict, *, weighted_rating: float | None = N
         raise ValueError("Взвешенная оценка должна быть числом от 0 до 10.")
     awarded = {}
     unresolved = []
-    for row in snapshot.get("competitions", []):
+    # Recompute proof from the linked source rows; arbitrary saved status
+    # metadata alone cannot confirm a championship or suppress uncertainty.
+    for row in apply_league_championship(snapshot.get("competitions", [])):
         if not isinstance(row, dict) or not _number(row.get("games")) or row["games"] <= 0:
             continue
         kind = _kind(row)
-        if kind is None:
+        if kind is None or row["games"] < BONUS_MIN_GAMES[kind]:
             continue
         outcome, reason = _outcome(row)
         if kind == "league":
-            if row.get("competition_complete") is not True:
+            championship = row.get("league_championship")
+            if championship:
+                outcome = "winner" if championship["outcome"] == "winner" else None
+                reason = None
+            elif str(row.get("id")) in {"MLS1", "POUS"}:
+                outcome = None
+                reason = "Результат плей-офф чемпионата не подтверждён источником."
+            elif row.get("competition_complete") is not True:
                 # A current table leader has not yet won the championship.
                 reason = "Чемпионат ещё не завершён." if row.get("competition_complete") is False else "Завершение чемпионата не подтверждено источником."
                 outcome = None

@@ -6,8 +6,8 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from season_ledger.domain import Season
-from season_ledger.providers.fotmob import FotMobProvider, _aggregate_matches, _previous_before
+from season_ledger.domain import Season, combine
+from season_ledger.providers.fotmob import FotMobProvider, _aggregate_matches, _category, _previous_before
 
 
 PROFILE = {"id": "132098", "name": "Harry Kane", "birth_date": "1993-07-28",
@@ -299,7 +299,8 @@ def test_saved_history_keeps_verified_match_context_without_changing_season_aggr
         "id": "4446289", "date": "2024-04-30", "kickoff": "2024-04-30T19:00:00+00:00",
         "source": "FotMob", "rating": 8.3, "minutes": 90, "goals": 1, "assists": 0,
         "team_id": "9823", "team": "Bayern München", "opponent_id": "8633", "opponent": "Real Madrid",
-        "competition_id": "42", "competition": "Champions League", "is_home": True,
+        "competition_id": "42", "competition": "Champions League", "category": "continental", "is_national": False,
+        "is_home": True,
         "home_score": 2, "away_score": 2, "stage": "1/2",
         "url": "https://www.fotmob.com/matches/real-madrid-vs-bayern-munchen/2tes97#4446289",
     }]
@@ -350,3 +351,108 @@ def test_saved_history_preserves_unrated_appearances_without_an_invented_zero_ra
     assert item["rated_games"] == 1
     assert item["rating"] == 7.2
     assert [row["rating"] for row in item["matches"]] == [7.2, None]
+
+
+@pytest.mark.parametrize(("league_id", "name", "expected"), [
+    (247, "Community Shield", "domestic_cup"),
+    (247, "FA Community Shield", "domestic_cup"),
+    (247, "Legacy caption", "domestic_cup"),
+    (8924, "Super Cup", "domestic_cup"),
+    (74, "UEFA Super Cup", "continental"),
+    (74, "Super Cup", "continental"),
+    (999999, "Community Shield", "domestic_cup"),
+    (999999, "FA Charity Shield", "domestic_cup"),
+    (999999, "Supporters Shield", "domestic_league"),
+])
+def test_supercup_and_shield_classification_distinguishes_domestic_and_international_source_ids(league_id, name, expected):
+    assert _category({"leagueId": league_id, "leagueName": name, "teamId": 8456}, set()) == expected
+
+
+def test_community_shield_and_uefa_supercup_ratings_join_transfermarkt_without_category_mismatch():
+    history = [
+        match(4185410, "2023-08-06", "6.3", league=247, league_name="Community Shield",
+              teamId=8456, teamName="Manchester City", opponentTeamId=9825, opponentTeamName="Arsenal"),
+        match(4300089, "2023-08-16", "6.0", league=74, league_name="UEFA Super Cup",
+              teamId=8456, teamName="Manchester City", opponentTeamName="Sevilla"),
+    ]
+    competitions = _aggregate_matches(history, FOTMOB, Season(2023))
+    tm = {"profile": {"id": "418560", "name": "Erling Haaland", "position": "CF"}, "competitions": [
+        {"id": "GBCS", "name": "Community Shield", "category": "domestic_cup", "competition_type_id": 9,
+         "team": "Manchester City", "games": 1, "goals": 1, "assists": 0, "minutes": 90,
+         "matches": [{"id": "tm-community-shield", "date": "2023-08-06T15:00:00Z"}]},
+        {"id": "USC", "name": "UEFA Super Cup", "category": "continental", "competition_type_id": 13,
+         "team": "Manchester City", "games": 1, "goals": 1, "assists": 0, "minutes": 90,
+         "matches": [{"id": "tm-uefa-supercup", "date": "2023-08-16T19:00:00Z"}]},
+    ]}
+    result = combine(tm, {"status": "matched", "competitions": competitions})
+    assert result["warnings"] == []
+    assert result["total"]["games"] == result["total"]["rated_games"] == 2
+    assert result["total"]["rating"] == pytest.approx(6.15)
+    assert {row["id"]: row["rating"] for row in result["competitions"]} == {"GBCS": 6.3, "USC": 6.0}
+    assert result["groups"]["domestic_league"]["games"] == 0
+    # Supercups stay in total/detail and do not enter either tournament column.
+    assert result["groups"]["domestic_cup"]["games"] == 0
+    assert result["groups"]["continental"]["games"] == 0
+    assert all(len(row["fotmob_matches"]) == 1 for row in result["competitions"])
+
+
+@pytest.mark.parametrize(("league_id", "name", "national", "category"), [
+    (54, "Bundesliga", False, "domestic_league"),
+    (42, "Champions League", False, "continental"),
+    (74, "UEFA Super Cup", False, "continental"),
+    (247, "Community Shield", False, "domestic_cup"),
+    (139, "Supercopa de España", False, "domestic_cup"),
+    (50, "EURO", True, "national_major"),
+    (44, "Copa America", True, "national_major"),
+    (77, "World Cup", True, "national_major"),
+    (10607, "EURO Qualification", True, "national_regular"),
+    (114, "Friendlies", True, "national_regular"),
+    (78, "FIFA Club World Cup", False, "continental"),
+])
+def test_detailed_history_carries_its_own_fotmob_category_and_national_flag(league_id, name, national, category):
+    original = match(1, "2024-06-01", "7.8", league=league_id, league_name=name, national=national)
+    before = deepcopy(original)
+    item = _aggregate_matches([original], FOTMOB, Season(2023))[0]
+    saved = item["matches"][0]
+    assert saved["category"] == item["category"] == category
+    assert saved["is_national"] is national
+    assert saved["competition_id"] == str(league_id)  # genuine FotMob namespace
+    assert saved["competition"] == name
+    assert saved["rating"] == item["rating"] == 7.8
+    assert "competition_type_id" not in saved  # FotMob history supplies no TM type
+    assert original == before
+
+
+def test_unknown_national_competition_uses_actual_fotmob_career_team_identity():
+    national = match(1, "2024-06-01", national=True, league=990001, league_name="Regional Cup")
+    club = match(2, "2024-06-02", national=False, league=990001, league_name="Regional Cup")
+    items = _aggregate_matches([national, club], FOTMOB, Season(2023))
+    saved = {row["id"]: row for item in items for row in item["matches"]}
+    assert saved["1"]["is_national"] is True
+    assert saved["1"]["category"] == "national_regular"
+    assert saved["2"]["is_national"] is False
+    assert saved["2"]["category"] == "domestic_cup"
+
+
+@pytest.mark.parametrize(("name", "category"), [
+    ("Trophée des Champions", "domestic_cup"),
+    ("Trophee des Champions", "domestic_cup"),
+    ("Supertaça Cândido de Oliveira", "domestic_cup"),
+    ("Charity Shield", "domestic_cup"),
+    ("CharityShield", "domestic_cup"),
+    ("Recopa Sudamericana", "continental"),
+    ("UEFA Super Cup", "continental"),
+    ("Copa del Rey", "domestic_cup"),
+])
+def test_shared_supercup_names_preserve_international_precedence_and_detailed_category(name, category):
+    history = [match(1, "2024-01-14", league=999999, league_name=name)]
+    item = _aggregate_matches(history, FOTMOB, Season(2023))[0]
+    assert item["category"] == category
+    assert item["matches"][0]["category"] == category
+    assert item["matches"][0]["is_national"] is False
+    assert item["games"] == item["rated_games"] == 1
+
+
+@pytest.mark.parametrize("league_id", [9, 13, 23])
+def test_numeric_fotmob_league_ids_are_not_interpreted_as_transfermarkt_supercup_types(league_id):
+    assert _category({"leagueId": league_id, "leagueName": "First Division", "teamId": 9823}, set()) == "domestic_league"

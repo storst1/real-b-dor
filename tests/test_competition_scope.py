@@ -11,6 +11,7 @@ from season_ledger.domain import (
     contributes_to_group, is_champions_league,
 )
 from season_ledger.ratings import apply_position_adjustment
+from season_ledger.competitions import is_supercup
 from season_ledger.store import Store
 from season_ledger.web import create_app
 
@@ -129,11 +130,12 @@ def test_scope_rebuilds_only_group_policy_and_retains_all_source_competitions_an
 def test_only_cl_group_adjusted_rating_uses_cl_rows_while_total_uses_every_competition():
     result = apply_position_adjustment(apply_competition_scope(legacy_snapshot()))
     assert result["groups"]["continental"]["adjusted_rating"] == pytest.approx(8.0 / .9253)
-    expected_mean = 443.6 / 62
-    assert result["total"]["adjusted_rating"] == pytest.approx(expected_mean / .9253)
+    # Sixteen source ratings of 10 are capped after the goalkeeper correction.
+    expected_adjusted_mean = ((443.6 - 160) / .9253 + 160) / 62
+    assert result["total"]["adjusted_rating"] == pytest.approx(expected_adjusted_mean)
     assert result["total"]["adjusted_rating"] != pytest.approx(7.15 / .9253)
     for row in result["competitions"]:
-        assert row["adjusted_rating"] == pytest.approx(row["rating"] / .9253)
+        assert row["adjusted_rating"] == pytest.approx(min(10, row["rating"] / .9253))
 
 
 def test_no_main_cl_means_empty_column_but_other_international_games_stay_in_total_and_details():
@@ -218,7 +220,7 @@ def test_cached_api_rebuilds_cl_column_and_all_competition_total_without_reimpor
         assert first["total"]["games"] == 67
         assert first["total"]["goals"] == 58
         assert first["total"]["rating"] == 7.15
-        assert first["total"]["adjusted_rating"] == pytest.approx((443.6 / 62) / .9253)
+        assert first["total"]["adjusted_rating"] == pytest.approx(((443.6 - 160) / .9253 + 160) / 62)
         assert len(first["competitions"]) == 11
         assert first["groups"]["other"]["games"] == 2
         assert tm.calls == fm.calls == 0
@@ -227,3 +229,90 @@ def test_cached_api_rebuilds_cl_column_and_all_competition_total_without_reimpor
     assert preserved == snapshot
     assert preserved["groups"]["continental"]["games"] == 33
     assert store.raw(identity) == (stored_tm, stored_fm)
+
+
+@pytest.mark.parametrize("name", [
+    "Supercopa", "Supercopa de España", "Supercoppa Italiana", "Franz-Beckenbauer-Supercup",
+    "UEFA Super Cup", "Supercoupe de Belgique", "Super Coupe du Cameroun",
+    "Trophée des Champions", "FA Community Shield", "Charity Shield",
+    "Supertaça Cândido de Oliveira", "Recopa", "Recopa Sudamericana", "Recopa Sul-Americana",
+    "U19 Supercup", "Youth Super Cup",
+    "Johan Cruijff Schaal", "Johan Cruijff Schaal XXVII", "Johan Cruyff Shield",
+    "PTT Telecom Cup", "Challenge des Champions",
+])
+def test_named_supercup_cannot_inflate_ordinary_cup_group_but_stays_in_total_and_details(name):
+    regular = competition("CDR", "Copa del Rey", "domestic_cup", 3, 1, 1, 210, 7.0, 3, "2024-01-10")
+    supercup = competition("LEGACY", name, "domestic_cup", 2, 3, 1, 180, 8.0, 2, "2024-01-14")
+    supercup["competition_type_id"] = 8  # Legacy metadata can mislabel a supercup as a normal cup.
+    supercup["fotmob_matches"] = [{"id": "123", "rating": 8.0, "date": "2024-01-14"}]
+    saved = legacy_snapshot([regular, supercup])
+    before = deepcopy(saved)
+    result = apply_competition_scope(saved)
+    assert result["groups"]["domestic_cup"]["games"] == 3
+    assert result["groups"]["domestic_cup"]["goals"] == 1
+    assert result["groups"]["domestic_cup"]["rating"] == 7.0
+    assert result["total"]["games"] == 5
+    assert result["total"]["goals"] == 4
+    assert result["total"]["rated_games"] == 5
+    assert result["total"]["rating"] == aggregate([regular, supercup])["rating"]
+    retained = next(row for row in result["competitions"] if row["id"] == "LEGACY")
+    assert retained["category"] == "domestic_cup"
+    assert retained["is_supercup"] is True
+    assert next(row for row in result["competitions"] if row["id"] == "CDR")["is_supercup"] is False
+    assert retained["matches"] == supercup["matches"]
+    assert retained["fotmob_matches"] == supercup["fotmob_matches"]
+    assert saved == before
+
+
+@pytest.mark.parametrize("kind", [9, 13, 23, "9", "13", "23"])
+def test_verified_supercup_types_work_with_legacy_captions(kind):
+    assert is_supercup({"name": "Legacy source caption", "competition_type_id": kind})
+
+
+@pytest.mark.parametrize("identity", ["DFL", "USC", "GBCS", "SUC"])
+def test_verified_supercup_codes_work_without_type_or_name(identity):
+    assert is_supercup({"id": identity})
+    assert is_supercup({"competition_id": identity, "competition": "Legacy caption"})
+
+
+@pytest.mark.parametrize("name", [
+    "Copa del Rey", "Copa América", "Copa America", "Copa Sudamericana", "FA Cup", "EFL Cup",
+    "UEFA Cup Winners' Cup", "Recopa de Europa", "Super League", "National Cup", "Recopado Trophy",
+    "Johan Cruijff Foundation Cup", "Johan Cruyff Shield Academy Trophy", "Challenge Cup", "Champions Cup",
+])
+def test_ordinary_cups_and_other_competitions_do_not_match_supercup_name_fragments(name):
+    assert not is_supercup({"name": name, "competition_type_id": 8})
+
+
+@pytest.mark.parametrize("entry", [
+    {"competition": "Supercopa de España", "competition_type_id": None, "competition_id": "139"},
+    {"competition": "Legacy caption", "competition_kind": "supercup"},
+    {"competition": {"name": "Trophée des Champions", "typeId": 8}},
+    {"gameInformation": {"competitionTypeId": 13}},
+])
+def test_shared_predicate_accepts_resolved_match_context_and_raw_transfermarkt_shapes(entry):
+    before = deepcopy(entry)
+    assert is_supercup(entry)
+    assert entry == before
+
+
+def test_cached_supercup_group_is_rebuilt_without_reimporting_or_deleting_saved_matches(tmp_path):
+    rows = [
+        competition("CDR", "Copa del Rey", "domestic_cup", 1, 0, 0, 55, 6.5, 1, "2024-01-10"),
+        competition("SUC", "Supercopa", "domestic_cup", 2, 3, 1, 167, 8.0, 2, "2024-01-14"),
+    ]
+    saved = legacy_snapshot(rows)
+    path = tmp_path / "legacy-supercup.db"
+    store = Store(path)
+    store.add_season(Season(2023))
+    identity = store.save_player("2023-24", "1", saved, {}, {})
+    tm, fm = NoImport(), NoImport()
+    with TestClient(create_app(path, tm=tm, fm=fm)) as client:
+        player = client.get("/api/seasons/2023-24").json()["players"][0]
+        assert player["groups"]["domestic_cup"]["games"] == 1
+        assert player["total"]["games"] == 3
+        assert len(player["competitions"]) == 2
+        assert tm.calls == fm.calls == 0
+    with store.connection() as db:
+        original = json.loads(db.execute("SELECT snapshot FROM players WHERE id=?", (identity,)).fetchone()[0])
+    assert original == saved

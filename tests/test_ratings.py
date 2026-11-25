@@ -64,9 +64,22 @@ def test_invalid_coefficient_is_unknown(coefficient):
     assert adjusted_rating(7, coefficient) is None
 
 
-def test_goalkeeper_adjustment_divides_and_does_not_clamp_index_at_ten():
+def test_goalkeeper_adjustment_divides_and_caps_the_result_at_ten():
     assert adjusted_rating(7, 0.9253) == pytest.approx(7 / 0.9253)
-    assert adjusted_rating(10, 0.9253) > 10
+    assert adjusted_rating(10, 0.9253) == 10
+
+
+def test_position_cap_is_applied_per_match_before_competition_and_season_average():
+    snapshot = {"position": "GK", "competitions": [{"id": "L1", "category": "domestic_league",
+        "rating": 9, "rated_games": 2, "fotmob_matches": [{"rating": 10}, {"rating": 8}]}],
+        "groups": {"domestic_league": {"rating": 9}}, "total": {"rating": 9}}
+    result = apply_position_adjustment(snapshot)
+    expected = (10 + 8 / .9253) / 2
+    assert result["competitions"][0]["adjusted_rating"] == pytest.approx(expected)
+    assert result["groups"]["domestic_league"]["adjusted_rating"] == pytest.approx(expected)
+    assert result["total"]["adjusted_rating"] == pytest.approx(expected)
+    assert result["total"]["rating"] == 9
+    assert expected != pytest.approx(9 / .9253)
 
 
 def test_competitions_categories_and_total_use_the_same_main_position():

@@ -16,7 +16,7 @@
     ["place", "М", "Место команды или стадия турнира"],
   ];
   const state = {
-    seasons: [], current: null, data: null, search: "", position: "", sort: "name",
+    seasons: [], current: null, data: null, search: "", position: "", sort: "points",
     trackedJobs: new Map(), hiddenJobs: new Set(), polling: false,
     timer: null, selectedPlayer: null, deletePlayer: null, loadSequence: 0,
   };
@@ -155,7 +155,7 @@
     let title = isNumber ? `${adjusted ? "Оценка с поправкой на позицию" : "Средняя оценка FotMob"}${sample}` : adjusted ? "Нет оценки с поправкой" : "FotMob: нет оценки";
     if (adjusted) {
       if (typeof adjustment?.coefficient === "number" && adjustment.coefficient > 0) {
-        title += ` · группа ${adjustment.group} · FotMob ÷ ${number(adjustment.coefficient, 4)} · без промежуточного округления`;
+        title += ` · группа ${adjustment.group} · FotMob ÷ ${number(adjustment.coefficient, 4)}, максимум 10 за матч · без промежуточного округления`;
       } else {
         title = `Поправка недоступна: позиция «${adjustment?.position || "не указана"}» не сопоставлена с группой.`;
       }
@@ -284,11 +284,22 @@
     return ({ winner: "Победа", champion: "Чемпион", finalist: "Финал", runner_up: "Финалист", third: "3-е место", semifinalist: "Полуфинал", semi_final: "Полуфинал", semifinal: "Полуфинал", quarterfinalist: "Четвертьфинал", quarter_final: "Четвертьфинал", quarterfinal: "Четвертьфинал" })[value] || value || "";
   }
 
+  function pointsAvailability(player) {
+    const weighted = player.weighted_rating;
+    if (weighted?.status === "missing_history") return "Обновите данные игрока, чтобы загрузить историю матчей.";
+    if (weighted?.status === "missing_position") return "Взвешенная оценка недоступна: позиция игрока не сопоставлена с группой поправки.";
+    if (weighted?.status === "incomplete_context") return "Взвешенная оценка пока недоступна: не хватает данных о контексте отдельных матчей.";
+    if (player.season_points?.status === "awaiting_results") return "Итоговые баллы пока не рассчитаны: результаты некоторых турниров ещё не подтверждены.";
+    return player.season_points?.total == null ? "Для итоговых баллов пока недостаточно данных." : "";
+  }
+
   function seasonPointsTitle(player) {
     const points = player.season_points;
-    if (!points) return "Баллы пока не рассчитаны: ожидается формула взвешенной оценки.";
+    if (!points) return pointsAvailability(player);
     const lines = [`Баллы за сезон: ${pointNumber(points.total)}`, `База: ${pointNumber(points.base_points)} · Бонусы: ${bonusNumber(points.bonus_points)}`];
-    if (points.status === "awaiting_weighted_rating" || points.weighted_rating == null) lines.push("Формула взвешенной оценки ещё не задана. Бонусы не являются итоговыми баллами.");
+    const availability = pointsAvailability(player);
+    if (availability) lines.push(availability);
+    lines.push("База = взвешенная оценка × 100. Итог = база + бонусы.");
     for (const bonus of points.bonuses || []) lines.push(`${[bonus.competition, bonus.team, bonusOutcome(bonus.outcome)].filter(Boolean).join(" · ")}: ${bonusNumber(bonus.points)}`);
     for (const item of points.pending || []) lines.push(`${item.competition || "Турнир"}: ${item.reason || "бонус пока не определён"}`);
     return lines.join("\n");
@@ -461,13 +472,65 @@
       return `Поправка недоступна: позиция «${adjustment?.position || player.position || "не указана"}» не сопоставлена с группой. FotMob: ${number(total.rating, 2)}.`;
     }
     const sample = typeof total.rated_games === "number" ? ` ${number(total.rated_games)} матчей с оценкой.` : "";
-    return `Поправка ${adjustment.group}: FotMob ÷ ${number(adjustment.coefficient, 4)}. Расчёт без промежуточного округления.${sample}`;
+    return `Поправка ${adjustment.group}: FotMob ÷ ${number(adjustment.coefficient, 4)}, максимум 10 за матч. Расчёт без промежуточного округления.${sample}`;
+  }
+
+  function entityName(value) {
+    return typeof value === "string" ? value : value?.name || value?.label || "";
+  }
+
+  function matchWeightTitle(match) {
+    const rules = ["Базовый вес: 1"];
+    for (const rule of match.weight_rules || []) {
+      if (rule.key === "base") continue;
+      rules.push(`${rule.label || rule.key || "Надбавка"}: ${bonusNumber(rule.addition)}`);
+    }
+    rules.push(`Итоговый вес: ${pointNumber(match.weight)}`);
+    if (match.included === false) rules.push("Матч не включён в расчёт.");
+    return rules.join("\n");
+  }
+
+  function matchWeightsDetail(player) {
+    const weighted = player.weighted_rating;
+    const matches = weighted?.matches || [];
+    const warnings = weighted?.warnings || [];
+    if (!matches.length && !warnings.length) return null;
+    const body = el("tbody");
+    for (const match of matches) {
+      const competition = entityName(match.competition) || entityName(match.context?.competition) || "—";
+      const opponent = entityName(match.opponent) || "Соперник не указан";
+      const rules = matchWeightTitle(match);
+      const row = el("tr", { class: match.included === false ? "match-excluded" : null },
+        el("td", {}, date(match.date)),
+        el("td", {}, externalLink(opponent, match.url, "match-source-link") || opponent,
+          match.team ? el("span", { class: "match-team" }, entityName(match.team)) : null),
+        el("td", {}, competition));
+      row.append(statCell({ rating: match.rating }, "rating"), statCell(match, "adjusted_rating", "", player.rating_adjustment),
+        el("td", { class: "match-weight", title: rules, "aria-label": rules },
+          pointNumber(match.weight), match.included === false ? el("span", { class: "match-excluded-label" }, "не учтён") : null));
+      body.append(row);
+    }
+    return el("details", { class: "match-weights" },
+      el("summary", {}, `Веса матчей (${number(matches.length)})`),
+      warnings.length ? el("ul", { class: "weighted-warnings" }, ...warnings.map(warning => el("li", {}, warning))) : null,
+      matches.length ? el("div", { class: "weights-table-wrap" }, el("table", { class: "weights-table" },
+        el("thead", {}, el("tr", {},
+          ...["Дата", "Соперник / команда", "Турнир", "FotMob", "С поправкой", "Вес"].map(label => el("th", {
+            scope: "col", title: label === "С поправкой" ? "Оценка после поправки на позицию, не более 10" : label === "Вес" ? "1 + сумма надбавок; наведите на значение для расшифровки" : null,
+          }, label)))), body)) : null);
   }
 
   function seasonPointsDetail(player) {
     const points = player.season_points;
+    const weighted = player.weighted_rating;
     const bonuses = points?.bonuses || [];
     const pending = points?.pending || [];
+    const availability = pointsAvailability(player);
+    const matchSummary = [
+      typeof weighted?.rated_games === "number" ? `Матчей с оценкой: ${number(weighted.rated_games)}` : null,
+      typeof weighted?.unrated_games === "number" ? `без оценки: ${number(weighted.unrated_games)}` : null,
+      typeof weighted?.total_weight === "number" ? `сумма весов: ${pointNumber(weighted.total_weight)}` : null,
+    ].filter(Boolean).join(" · ");
     const rows = bonuses.map(bonus => el("tr", {},
       el("td", {}, bonus.competition || "Турнир", bonus.team ? el("span", { class: "bonus-team" }, bonus.team) : null),
       el("td", {}, bonusOutcome(bonus.outcome) || "—"), el("td", { class: "bonus-amount" }, bonusNumber(bonus.points))));
@@ -478,8 +541,10 @@
         el("span", {}, "База: ", el("strong", {}, pointNumber(points?.base_points))),
         el("span", {}, "Бонусы: ", el("strong", {}, bonusNumber(points?.bonus_points))),
         el("span", {}, "Всего: ", el("strong", {}, pointNumber(points?.total)))),
-      !points || points.status === "awaiting_weighted_rating" || points.weighted_rating == null
-        ? el("p", { class: "points-explanation" }, "Формула взвешенной оценки ещё не задана. Базовая часть и итоговые баллы пока не рассчитаны; бонусы показаны отдельно.") : null,
+      el("p", { class: "points-formula" }, "Взвешенная оценка = Σ(оценка с поправкой × вес) ÷ Σ(весов) по учтённым матчам. Вес = 1 + сумма надбавок. Каждая оценка с поправкой ограничена 10. База = взвешенная оценка × 100; итог = база + бонусы."),
+      availability ? el("p", { class: "points-explanation" }, availability) : null,
+      matchSummary ? el("p", { class: "weights-metadata" }, matchSummary) : null,
+      matchWeightsDetail(player),
       rows.length ? el("div", { class: "bonus-table-wrap" }, el("table", { class: "bonus-table" },
         el("thead", {}, el("tr", {}, ...["Турнир / команда", "Результат", "Бонус"].map(label => el("th", { scope: "col" }, label)))), el("tbody", {}, ...rows))) : null,
       pending.length ? el("div", { class: "points-pending" }, el("span", {}, "Бонусы пока не определены:"),
@@ -489,12 +554,13 @@
   function renderPlayer(player) {
     const total = player.total || {};
     const table = el("table", { class: "detail-table" });
-    const head = el("thead", {}, el("tr", {}, ...["Турнир / команда", "Матчи", "FotMob", "С поправкой", "Голы", "Передачи", "Минуты", "Место / стадия"].map(label => el("th", { scope: "col", title: label === "С поправкой" ? "Оценка FotMob, делённая на коэффициент позиции" : null }, label))));
+    const head = el("thead", {}, el("tr", {}, ...["Турнир / команда", "Матчи", "FotMob", "С поправкой", "Голы", "Передачи", "Минуты", "Место / стадия"].map(label => el("th", { scope: "col", title: label === "С поправкой" ? "Оценка FotMob после деления на коэффициент позиции, не более 10 за матч" : null }, label))));
     const body = el("tbody");
     for (const competition of player.competitions || []) {
-      const category = competition.category === "continental"
-        ? (competition.is_champions_league ? "Лига чемпионов" : "Другие международные клубные турниры")
-        : CATEGORIES.find(item => item.key === competition.category)?.label || "Другие турниры";
+      const category = competition.is_supercup ? "Суперкубок"
+        : competition.category === "continental"
+          ? (competition.is_champions_league ? "Лига чемпионов" : "Другие международные клубные турниры")
+          : CATEGORIES.find(item => item.key === competition.category)?.label || "Другие турниры";
       const sources = (competition.sources || []).map(source => ({ transfermarkt: "Transfermarkt", fotmob: "FotMob" }[source] || source)).join(" + ");
       const row = el("tr", {}, el("td", {}, el("span", { class: "competition-name" }, competition.name || "Турнир", el("span", { class: "competition-meta" }, [competition.team, category].filter(Boolean).join(" · ")), el("span", { class: "competition-meta" }, sources || "Источник не указан"))));
       for (const key of ["games", "rating", "adjusted_rating", "goals", "assists", "minutes", "place"]) row.append(statCell(competition, key, "", player.rating_adjustment));

@@ -14,15 +14,20 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 
+from season_ledger.competitions import fotmob_competition_category, is_supercup
 from season_ledger.domain import Season
+from season_ledger.match_context import normalize_team
 
 
 DEFAULT_BASE_URL = "https://www.fotmob.com/api/data/"
 _ID = re.compile(r"[1-9][0-9]{0,19}")
-_CONTINENTAL_IDS = {42, 73, 78, 10216}
-_MAJOR_IDS = {44, 50, 77, 289, 290, 297}
+_CONTINENTAL_IDS = {42, 73, 74, 78, 10216}
+_DOMESTIC_CUP_IDS = {247, 8924}  # Community Shield; German Super Cup (verified source IDs).
+_MAJOR_IDS = {44, 50, 77, 289, 290}
 _FRIENDLY_IDS = {489, 9408, 9675}
 _VARIANTS = str.maketrans({"ø": "o", "ł": "l", "đ": "d", "ı": "i", "æ": "ae", "œ": "oe"})
+# Verified provider labels; these aliases still need birth-date and club evidence.
+_VERIFIED_NAME_ALIASES = {frozenset({"alisson", "alisson becker"})}
 
 
 def _object(value) -> dict:
@@ -111,6 +116,42 @@ def _shared_surname(first, second) -> bool:
     return bool(_surname_tokens(first) & _surname_tokens(second) & endings)
 
 
+def _verified_name_alias(first, second) -> bool:
+    return frozenset({_name(first), _name(second)}) in _VERIFIED_NAME_ALIASES
+
+
+def _reordered_full_name(first, second) -> bool:
+    """Allow family-name-first forms without dropping any name tokens."""
+    original, reordered = _name(first).split(), _name(second).split()
+    return (len(original) > 1 and len(original) == len(reordered) and original != reordered
+            and any(original[index:] + original[:index] == reordered for index in range(1, len(original))))
+
+
+def _supported_name_alias(first, second) -> bool:
+    if _verified_name_alias(first, second):
+        return True
+    original, candidate = _name(first).split(), _name(second).split()
+    if (len(original) > 1 and len(candidate) > 1
+            and (original[-1] == candidate[0] or original[0] == candidate[-1]
+                 or original != candidate and sorted(original) == sorted(candidate))):
+        # A change of name order must retain the whole name; a shared given
+        # syllable, such as Jae in Min-jae Kim / Kim Jae, is not a surname.
+        return _reordered_full_name(first, second)
+    return _shared_surname(first, second)
+
+
+def _search_terms(value) -> list[str]:
+    """Bound fallbacks for a backend whose full-name suggestions are literal."""
+    name = _text(value) or ""
+    words = name.split()
+    terms = [name]
+    if len(words) > 2:
+        terms.append(" ".join(words[-2:]))
+    if len(words) > 1:
+        terms.append(" ".join([words[-1], *words[:-1]]))
+    return list(dict.fromkeys(term for term in terms if term))
+
+
 def _profile_clubs(profile: dict) -> set[str]:
     return {name for row in _array(profile.get("clubs")) if isinstance(row, dict)
             and (name := _team_name(row.get("name")))}
@@ -128,6 +169,25 @@ def _fotmob_clubs(data: dict) -> set[str]:
     return result
 
 
+def _matching_profiles(profile: dict, candidates: list[dict]) -> list[dict]:
+    tm_birth = _day(profile.get("birth_date"))
+    clubs = _profile_clubs(profile)
+    matches = []
+    for candidate in candidates:
+        same_name = _name(candidate.get("name")) == _name(profile.get("name"))
+        same_club = bool(clubs & _fotmob_clubs(candidate))
+        if tm_birth is None:
+            if same_name and same_club:
+                matches.append(candidate)
+            continue
+        if _day(candidate.get("birthDate")) != tm_birth:
+            continue
+        alias = _supported_name_alias(profile.get("name"), candidate.get("name"))
+        if same_name or alias and same_club:
+            matches.append(candidate)
+    return matches
+
+
 def _national_ids(data: dict) -> set[str]:
     result = set()
     items = _object(_object(data.get("careerHistory")).get("careerItems"))
@@ -140,6 +200,8 @@ def _national_ids(data: dict) -> set[str]:
 
 
 def _category(row: dict, national_teams: set[str]) -> str:
+    if category := fotmob_competition_category(row):
+        return category
     name = _name(row.get("leagueName"))
     league_id = _integer(row.get("leagueId"))
     national = (_id(row.get("teamId")) in national_teams or league_id in _MAJOR_IDS or league_id == 114
@@ -154,13 +216,16 @@ def _category(row: dict, national_teams: set[str]) -> str:
         return "national_major" if major and not qualification else "national_regular"
     if league_id in _FRIENDLY_IDS or "friendl" in name or "audi cup" in name:
         return "other"
+    if league_id in _DOMESTIC_CUP_IDS:
+        return "domestic_cup"
     if league_id in _CONTINENTAL_IDS or any(s in name for s in (
         "champions league", "europa league", "conference league", "libertadores",
         "sudamericana", "club world cup", "afc cup", "caf confederation", "recopa",
         "uefa super cup", "intercontinental", "concacaf champions",
     )):
         return "continental"
-    if any(s in name for s in ("cup", "copa", "coupe", "pokal", "taca", "supercop", "super cup")):
+    if (is_supercup({"name": row.get("leagueName")})
+            or any(s in name for s in ("cup", "copa", "coppa", "coupe", "pokal", "taca", "supercop", "super cup"))):
         return "domestic_cup"
     return "domestic_league"
 
@@ -175,12 +240,62 @@ def _in_season(day: date, category: str, season: Season) -> bool:
 def _competition_days(competitions: list[dict] | None, *, clubs_only: bool = False) -> set[date]:
     days = set()
     for competition in competitions or []:
-        if clubs_only and competition.get("category") in {"national_regular", "national_major"}:
+        if clubs_only and (competition.get("category") in {"national_regular", "national_major"}
+                           or _integer(competition.get("competition_type_id")) in {11, 17, 19, 20}
+                           or str(competition.get("id")) == "OLYM"):
             continue
         for match in _array(competition.get("matches")):
             if isinstance(match, dict) and (day := _day(match.get("date"))) is not None:
                 days.add(day)
     return days
+
+
+def _kickoff(value) -> datetime | None:
+    value = value.get("utcTime") if isinstance(value, dict) else value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
+
+def _adjacent_club_match(row: dict, competitions: list[dict]) -> bool:
+    """Bridge a source date discrepancy only with one fully corroborated game.
+
+    A one-day allowance alone can pull a different season's fixture into the
+    history. Require UTC kickoffs within 24h, both teams, the final score and
+    all three player appearance statistics to agree instead.
+    """
+    kickoff = _kickoff(row.get("matchDate"))
+    team, opponent = normalize_team(row.get("teamName")), normalize_team(row.get("opponentTeamName"))
+    home = row.get("isHomeTeam")
+    scores = [_integer(row.get(key)) for key in ("homeScore", "awayScore")]
+    statistics = [_integer(row.get(key)) for key in ("minutesPlayed", "goals", "assists")]
+    if (kickoff is None or not team or not opponent or type(home) is not bool
+            or None in scores or None in statistics or row.get("playedInMatch") is not True):
+        return False
+    scored, conceded = scores if home else scores[::-1]
+    candidates = []
+    for competition in competitions:
+        if (competition.get("category") in {"national_regular", "national_major"}
+                or _integer(competition.get("competition_type_id")) in {11, 17, 19, 20}):
+            continue
+        for match in _array(competition.get("matches")):
+            if not isinstance(match, dict) or (tm_kickoff := _kickoff(match.get("date"))) is None:
+                continue
+            if (abs((kickoff.date() - tm_kickoff.date()).days) != 1
+                    or abs(kickoff - tm_kickoff) > timedelta(hours=24)
+                    or normalize_team(match.get("team") or competition.get("team")) != team
+                    or normalize_team(match.get("opponent")) != opponent
+                    or match.get("game_state") not in {"regularly_terminated", "extra_time", "penalty_shootout",
+                                                       "terminated", "finished", "after_extra_time", "after_penalties"}
+                    or [_integer(match.get(key)) for key in ("goals_for", "goals_against")] != [scored, conceded]
+                    or [_integer(match.get(key)) for key in ("minutes", "goals", "assists")] != statistics):
+                continue
+            candidates.append(match)
+    return len(candidates) == 1
 
 
 def _search_players(payload) -> list[dict]:
@@ -223,7 +338,7 @@ def _previous_before(value, player_id: str) -> int | None:
     return int(values[0])
 
 
-def _match_history_row(row: dict) -> dict:
+def _match_history_row(row: dict, *, category: str, is_national: bool) -> dict:
     """Keep source match context for future weights without changing coverage."""
     day = _day(row.get("matchDate"))
     kickoff = None
@@ -245,6 +360,9 @@ def _match_history_row(row: dict) -> dict:
         "team_id": _id(row.get("teamId")), "team": _text(row.get("teamName")),
         "opponent_id": _id(row.get("opponentTeamId")), "opponent": _text(row.get("opponentTeamName")),
         "competition_id": _id(row.get("leagueId")), "competition": _text(row.get("leagueName")),
+        # Derived from FotMob's competition and player career-team records.
+        # No Transfermarkt competition type or identifier is assigned here.
+        "category": category, "is_national": is_national,
         "is_home": row.get("isHomeTeam") if type(row.get("isHomeTeam")) is bool else None,
         "home_score": _integer(row.get("homeScore")), "away_score": _integer(row.get("awayScore")),
         "stage": _text(row.get("stage")),
@@ -265,11 +383,13 @@ def _aggregate_matches(matches: list[dict], data: dict, season: Season,
         seen.add(identity)
         day = _day(row.get("matchDate"))
         category = _category(row, national_teams)
-        club = category not in {"national_regular", "national_major"}
+        olympic = _id(row.get("leagueId")) == "66"
+        club = category not in {"national_regular", "national_major"} and not olympic
         # Source season IDs, rather than June 30, identify delayed club seasons
         # such as the 2019/20 Champions League, completed in August 2020.
-        included = (day in club_days if club and not season.calendar and season_competitions is not None
-                    else day is not None and _in_season(day, category, season))
+        included = ((day in club_days or _adjacent_club_match(row, season_competitions))
+                    if club and not season.calendar and season_competitions is not None
+                    else day is not None and _in_season(day, "national_major" if olympic else category, season))
         if day is None or not included:
             continue
         # Unused substitutes carry zero minutes and a synthetic rating of zero.
@@ -278,7 +398,7 @@ def _aggregate_matches(matches: list[dict], data: dict, season: Season,
         if played is False or (played is not True and not ((_integer(row.get("minutesPlayed")) or 0) > 0 or rating is not None)):
             continue
         # Exhibition club games do not belong in the season competition table.
-        if category == "other":
+        if category == "other" and not olympic:
             continue
         league_id, team_id = _id(row.get("leagueId")), _id(row.get("teamId"))
         if not league_id or not team_id or not _text(row.get("leagueName")) or not _text(row.get("teamName")):
@@ -293,7 +413,10 @@ def _aggregate_matches(matches: list[dict], data: dict, season: Season,
             "team": rows[0]["teamName"], "team_id": team_id, "games": len(rows),
             "rating": sum(ratings) / len(ratings) if ratings else None,
             "rated_games": len(ratings), "place": None,
-            "matches": [_match_history_row(row) for row in rows],
+            "matches": [_match_history_row(row, category=category,
+                                           is_national=(team_id in national_teams or category in {"national_regular", "national_major"}
+                                                        or league_id == "66"))
+                        for row in rows],
         }
         for metric, field in (("goals", "goals"), ("assists", "assists"), ("minutes", "minutesPlayed")):
             values = [_integer(row.get(field)) for row in rows]
@@ -326,6 +449,13 @@ class FotMobProvider:
         before = int(datetime.combine(end + timedelta(days=1), datetime.min.time(), UTC).timestamp())
         matches = []
         seen_cursors = set()
+        expected_history = any(start <= day <= end for day in competition_days)
+
+        def complete_history():
+            if expected_history and not any(start <= _day(row["matchDate"]) <= end for row in matches):
+                raise ValueError("FotMob не вернул историю матчей за выбранный сезон. Повторите загрузку.")
+            return matches
+
         for _ in range(20):
             if before in seen_cursors:
                 raise ValueError("FotMob повторяет страницу матчей; загрузка остановлена.")
@@ -335,18 +465,25 @@ class FotMobProvider:
             url = f"https://pub.fotmob.com/prod/db/api/player/{player_id}/matches?" + urlencode({
                 "before": before, "leagueId": "all", "teamId": "all",
             })
-            page = await self._get("playerMatches", url=url)
-            if not isinstance(page, dict) or not isinstance(page.get("matches"), list):
-                raise ValueError("FotMob вернул некорректную историю матчей.")
-            rows = page["matches"]
-            if any(not isinstance(row, dict) or _day(row.get("matchDate")) is None for row in rows):
-                raise ValueError("В истории FotMob отсутствуют даты матчей.")
+            # An empty first page need not mean there were no appearances.
+            # With dated TM evidence, retry that exact range once; do not
+            # publish a successful empty history if the source remains empty.
+            attempts = 2 if expected_history and not matches else 1
+            for attempt in range(attempts):
+                page = await self._get("playerMatches", url=url)
+                if not isinstance(page, dict) or not isinstance(page.get("matches"), list):
+                    raise ValueError("FotMob вернул некорректную историю матчей.")
+                rows = page["matches"]
+                if any(not isinstance(row, dict) or _day(row.get("matchDate")) is None for row in rows):
+                    raise ValueError("В истории FotMob отсутствуют даты матчей.")
+                if rows or attempt == attempts - 1:
+                    break
             matches.extend(rows)
             if rows and min(_day(row["matchDate"]) for row in rows) < start:
-                return matches
+                return complete_history()
             next_before = _previous_before(page.get("previous"), player_id)
             if next_before is None:
-                return matches
+                return complete_history()
             if not rows or next_before >= before:
                 raise ValueError("FotMob вернул некорректный порядок страниц матчей.")
             before = next_before
@@ -368,31 +505,33 @@ class FotMobProvider:
                     result["warnings"].append("Дата рождения выбранного игрока FotMob не совпадает с Transfermarkt.")
                     return result
                 same_name = _name(profile.get("name")) == _name(data.get("name"))
+                corroborated_alias = (_verified_name_alias(profile.get("name"), data.get("name"))
+                                      or _reordered_full_name(profile.get("name"), data.get("name")))
                 supported_alias = (tm_birth is not None and tm_birth == fm_birth
-                                   and _shared_surname(profile.get("name"), data.get("name")))
+                                   and (bool(_profile_clubs(profile) & _fotmob_clubs(data)) if corroborated_alias
+                                        else _supported_name_alias(profile.get("name"), data.get("name"))))
                 if not same_name and not supported_alias:
                     result["warnings"].append("Выбранный профиль FotMob не удалось сопоставить с игроком Transfermarkt.")
                     return result
             else:
-                search = await self._get("search/suggest", term=profile.get("name", ""), hits="20", lang="en")
-                suggestions = _search_players(search)
-                if not suggestions:
+                hydrated = []
+                seen = set()
+                matching = []
+                for term in _search_terms(profile.get("name")):
+                    search = await self._get("search/suggest", term=term, hits="20", lang="en")
+                    for suggestion in _search_players(search)[:10]:
+                        identity = _id(suggestion["id"])
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        hydrated.append(await self._profile(identity))
+                    matching = _matching_profiles(profile, hydrated)
+                    if matching:
+                        break
+                result["candidates"] = [_candidate(row) for row in hydrated]
+                if not hydrated:
                     result["warnings"].append("Игрок не найден в FotMob. Можно указать ссылку на его профиль вручную.")
                     return result
-                hydrated = []
-                for suggestion in suggestions[:10]:
-                    candidate_data = await self._profile(_id(suggestion["id"]))
-                    hydrated.append(candidate_data)
-                result["candidates"] = [_candidate(row) for row in hydrated]
-                exact = [row for row in hydrated if _name(row.get("name")) == _name(profile.get("name"))]
-                tm_birth = _day(profile.get("birth_date"))
-                clubs = _profile_clubs(profile)
-                if tm_birth:
-                    matching = [row for row in hydrated if _day(row.get("birthDate")) == tm_birth
-                                and (row in exact or (_shared_surname(profile.get("name"), row.get("name"))
-                                     and clubs & _fotmob_clubs(row)))]
-                else:
-                    matching = [row for row in exact if clubs & _fotmob_clubs(row)]
                 if len(matching) != 1:
                     result["status"] = "ambiguous"
                     result["warnings"].append("Профиль FotMob нужно выбрать вручную: однозначного совпадения имени и даты рождения нет.")

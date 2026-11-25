@@ -52,15 +52,28 @@ def _number(value) -> bool:
 
 
 def adjusted_rating(raw, coefficient) -> float | None:
-    """Return full precision; presentation may round, and indices can exceed 10."""
+    """Correct the position and cap the resulting match rating at ten."""
     if (not _number(raw) or not 0 < raw <= 10
             or not _number(coefficient) or coefficient <= 0):
         return None
-    return raw / coefficient
+    return min(10.0, raw / coefficient)
+
+
+def _competition_adjusted(row: dict, coefficient: float | None) -> float | None:
+    matches = row.get("fotmob_matches")
+    if isinstance(matches, list) and any(isinstance(match, dict) and "rating" in match for match in matches):
+        values = [adjusted_rating(match.get("rating"), coefficient) for match in matches if isinstance(match, dict)]
+        values = [value for value in values if value is not None]
+        sample = row.get("rated_games")
+        # Per-match capping precedes the average when the complete rated sample
+        # is available. Legacy partial histories retain their source summary.
+        if values and (sample is None or sample == len(values)):
+            return math.fsum(values) / len(values)
+    return adjusted_rating(row.get("rating"), coefficient)
 
 
 def _weighted_adjusted(rows: list[dict], coefficient: float | None) -> float | None:
-    rated = [(row, adjusted_rating(row.get("rating"), coefficient)) for row in rows]
+    rated = [(row, _competition_adjusted(row, coefficient)) for row in rows]
     rated = [(row, rating) for row, rating in rated if rating is not None]
     known = [(row, rating) for row, rating in rated
              if _number(row.get("rated_games")) and row["rated_games"] > 0]
@@ -90,7 +103,7 @@ def apply_position_adjustment(snapshot: dict) -> dict:
     competitions = result.get("competitions")
     competitions = [row for row in competitions if isinstance(row, dict)] if isinstance(competitions, list) else []
     for row in competitions:
-        row["adjusted_rating"] = adjusted_rating(row.get("rating"), coefficient)
+        row["adjusted_rating"] = _competition_adjusted(row, coefficient)
     has_competitions = "competitions" in result
     groups = result.get("groups")
     if isinstance(groups, dict):

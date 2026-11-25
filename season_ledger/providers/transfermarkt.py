@@ -15,13 +15,14 @@ from typing import TYPE_CHECKING
 import httpx
 from transfermarkt_api.exceptions import TransfermarktError
 from transfermarkt_api.tfmkt import TfmktClient
+from season_ledger.league_outcomes import apply_league_championship
 
 if TYPE_CHECKING:
     from season_ledger.domain import Season
 
 
 _NATIONAL_TYPES = {11, 17, 19, 20}
-_MAJOR_IDS = {"FIWC", "WM", "EURO", "CA", "COPA", "CA16", "GC", "AFR", "ASIA", "AFCON", "AFC"}
+_MAJOR_IDS = {"FIWC", "WM", "EURO", "CA", "COPA", "CA16", "GC", "AFR", "ASIA", "AFCON", "AFC", "AFAC"}
 _STAGES = {"FF": "Финал", "HF": "Полуфинал", "VF": "1/4 финала", "AF": "1/8 финала", "16F": "1/16 финала"}
 _OPTIONAL_ERRORS = (TransfermarktError, httpx.HTTPError, ValueError, TypeError, KeyError)
 
@@ -276,11 +277,12 @@ def _selected(game: dict, season: Season, competitions: dict) -> bool:
         # window. In particular, 2019/20 finished in July/August 2020, and some
         # summer club tournaments start before July 1.
         return str(info.get("seasonId")) == str(season.start_year)
-    if kind == "national_major" and not season.calendar:
+    if (kind == "national_major" or str(info.get("competitionId")).upper() == "OLYM") and not season.calendar:
         national_end = getattr(season, "national_end", date(season.end.year, 8, 31))
-        # The tournament's TM season ID keeps its July knockout games with its
-        # June group stage, and prevents counting it again in the next season.
-        return season.start <= played_on <= national_end and str(info.get("seasonId")) == str(season.start_year)
+        # Final tournaments use non-overlapping September–August windows in
+        # both sources. Nominal edition IDs can predate delayed tournaments,
+        # such as the 2023 Asian Cup actually played in January 2024.
+        return date(season.start_year, 9, 1) <= played_on <= national_end
     return season.start <= played_on <= season.end
 
 
@@ -454,4 +456,4 @@ class TransfermarktProvider:
             warnings.append("Transfermarkt не содержит сыгранных матчей в выбранном сезоне.")
         if any(row[key] is None for row in totals for key in ("goals", "assists", "minutes")):
             warnings.append("Часть статистики Transfermarkt отсутствует: неизвестные значения показаны прочерком.")
-        return {"profile": profile, "competitions": totals, "market_value": value, "warnings": warnings}
+        return {"profile": profile, "competitions": apply_league_championship(totals), "market_value": value, "warnings": warnings}
