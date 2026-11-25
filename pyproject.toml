@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "real-b-dor"
+version = "0.1.0"
+description = "Local football player season statistics from Transfermarkt and FotMob"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "httpx>=0.28.1,<1",
+    "jinja2>=3.1,<4",
+    "transfermarkt-api==5.0.0",
+    "uvicorn>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+include = ["season_ledger*"]
+
+[tool.setuptools.package-data]
+season_ledger = ["templates/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

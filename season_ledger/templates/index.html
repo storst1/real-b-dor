@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102c28">
+  <meta name="description" content="Личная коллекция сезонной статистики футболистов из Transfermarkt и FotMob.">
+  <title>Сезон · REAL B’DOR</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="workspace-nav">
+      <a class="brand" href="/" aria-label="REAL B’DOR — главная">REAL B’DOR</a>
+      <nav id="season-list" class="season-list" aria-label="Выбор сезона"><span class="loading-label">Загружаем сезоны…</span></nav>
+      <button class="button button-secondary" id="new-season-button" type="button">+ Новый сезон</button>
+    </header>
+    <main class="main-content" id="main-content">
+      <section class="page-heading">
+        <div class="heading-label"><h1>Сезон <span id="season-title">—</span></h1><span class="player-count" id="player-count">0 игроков</span></div>
+        <button class="button button-primary add-player-trigger" type="button">+ Добавить игрока</button>
+      </section>
+      <div id="page-error" class="notice notice-error" role="alert" hidden></div>
+      <section id="jobs-section" class="jobs-section" aria-label="Загрузка игроков" hidden><div id="jobs-list"></div></section>
+      <section class="collection-panel" aria-label="Статистика игроков">
+        <div class="table-toolbar" id="table-toolbar" hidden>
+          <label class="search-field"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg><input id="player-search" type="search" placeholder="Игрок или клуб" aria-label="Найти игрока или клуб"></label>
+          <div class="toolbar-filters"><label class="select-wrap"><span class="sr-only">Позиция игрока</span><select id="position-filter"><option value="">Все позиции</option></select></label><label class="select-wrap"><span class="sr-only">Порядок сортировки</span><select id="sort-select"><option value="name">По имени</option><option value="goals">По голам</option><option value="assists">По передачам</option><option value="rating">По оценке</option><option value="points">По баллам</option><option value="value">По стоимости</option></select></label></div>
+          <span class="table-key" title="И — матчи; Оц. — оценка с поправкой на позицию; Г — голы; П — передачи; М — место или стадия">И · Оц. · Г · П · М</span>
+        </div>
+        <div class="empty-state" id="empty-state">
+          <p>В этом сезоне пока нет игроков.</p><button class="button button-secondary add-player-trigger" type="button">Добавить игрока</button>
+        </div>
+        <div class="table-container" id="table-container" hidden><table class="season-table" id="season-table"><caption class="sr-only">Сезонная статистика футболистов с разбивкой по турнирам</caption><thead id="table-head"></thead><tbody id="table-body"></tbody></table></div>
+        <div class="no-results" id="no-results" hidden>Никого не нашли. Попробуйте другое имя или позицию.</div>
+      </section>
+    </main>
+  </div>
+  <dialog class="modal" id="add-player-dialog" aria-labelledby="add-player-title">
+    <form id="add-player-form">
+      <div class="modal-heading"><div><span class="eyebrow">В коллекцию</span><h2 id="add-player-title">Добавить игрока</h2></div><button class="close-button" type="button" data-close="add-player-dialog" aria-label="Закрыть">×</button></div>
+      <p class="modal-description">Укажите профиль Transfermarkt. Мы загрузим данные игрока только за выбранный сезон.</p>
+      <label class="field-label" for="player-url">Ссылка на профиль Transfermarkt</label><input class="text-input" id="player-url" name="url" type="url" placeholder="https://www.transfermarkt.com/harry-kane/profil/spieler/132098" required autocomplete="off">
+      <label class="field-label" for="import-season">Сезон</label><div class="select-wrap full-select"><select id="import-season" name="season" required></select></div>
+      <div class="import-explainer"><div class="source-marks"><span>TM</span><span>FM</span></div><p>Биография, статистика и историческая стоимость — Transfermarkt. Средняя оценка — FotMob, если она доступна.</p></div>
+      <div class="form-error" id="add-player-error" role="alert" hidden></div><div class="modal-actions"><button class="button button-secondary" type="button" data-close="add-player-dialog">Отмена</button><button class="button button-primary" type="submit" id="import-submit">Добавить в сезон</button></div>
+    </form>
+  </dialog>
+  <dialog class="modal season-modal" id="season-dialog" aria-labelledby="season-dialog-title">
+    <form id="season-form"><div class="modal-heading"><div><span class="eyebrow">Коллекция</span><h2 id="season-dialog-title">Новый сезон</h2></div><button class="close-button" type="button" data-close="season-dialog" aria-label="Закрыть">×</button></div><p class="modal-description">Выберите формат и год начала сезона.</p>
+      <label class="field-label" for="season-year">Год начала</label><input class="text-input" id="season-year" name="start_year" type="number" min="1900" max="2100" required>
+      <label class="field-label" for="season-format">Формат сезона</label><div class="select-wrap full-select"><select id="season-format" name="calendar"><option value="split">Осень — весна, например 2023/24</option><option value="calendar">Календарный год, например 2023</option></select></div>
+      <p class="field-help" id="season-date-preview"></p><div class="form-error" id="season-error" role="alert" hidden></div><div class="modal-actions"><button class="button button-secondary" type="button" data-close="season-dialog">Отмена</button><button class="button button-primary" type="submit">Создать сезон</button></div>
+    </form>
+  </dialog>
+  <dialog class="modal detail-modal" id="player-dialog" aria-labelledby="player-dialog-title"><div id="player-detail"></div></dialog>
+  <dialog class="modal delete-modal" id="delete-dialog" aria-labelledby="delete-title"><div class="modal-heading"><h2 id="delete-title">Удалить из сезона?</h2><button class="close-button" type="button" data-close="delete-dialog" aria-label="Закрыть">×</button></div><p class="modal-description" id="delete-description"></p><div class="form-error" id="delete-error" role="alert" hidden></div><div class="modal-actions"><button class="button button-secondary" type="button" data-close="delete-dialog">Отмена</button><button class="button button-danger" id="delete-confirm" type="button">Удалить игрока</button></div></dialog>
+  <div class="toast-container" id="toast-container" role="status" aria-live="polite"></div>
+  <noscript><div class="noscript">Для работы приложения включите JavaScript в браузере.</div></noscript>
+</body>
+</html>
