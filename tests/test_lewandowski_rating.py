@@ -143,8 +143,8 @@ def test_store_recovers_saved_combined_qualifiers_without_import_or_a_euro_title
     assert first["weighted_rating"]["rated_games"] == 5
     assert first["weighted_rating"]["rating"] == pytest.approx(7.275)
     assert first["season_points"]["status"] == "complete"
-    assert {row["kind"]: row["points"] for row in first["season_points"]["bonuses"]} == {"champions_league": 25}
-    assert first["season_points"]["total"] == pytest.approx(752.5)
+    assert {row["kind"]: row["points"] for row in first["season_points"]["bonuses"]} == {"champions_league": 12}
+    assert first["season_points"]["total"] == pytest.approx(739.5)
     assert repeated["weighted_rating"] == first["weighted_rating"]
     assert repeated["updated_at"] == first["updated_at"]
     assert store.raw(identity) == (original_tm, original_fm)

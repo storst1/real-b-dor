@@ -6,7 +6,7 @@
     { key: "domestic_league", label: "Национальная лига", short: "Лига" },
     { key: "continental", label: "Лига чемпионов", short: "Лига чемпионов" },
     { key: "national_regular", label: "Сборная · обычные матчи", short: "Сборная" },
-    { key: "national_major", label: "Сборная · финальные турниры", short: "ЧМ / Евро / Копа" },
+    { key: "national_major", label: "Сборная · финальные турниры", short: "ЧМ / Евро / Копа / КАН" },
     { key: "domestic_cup", label: "Кубки страны", short: "Кубки" },
     { key: "other", label: "Другие турниры", short: "Прочие" },
   ];
@@ -15,8 +15,11 @@
     ["goals", "Г", "Голы"], ["assists", "П", "Голевые передачи"],
     ["place", "М", "Место команды или стадия турнира"],
   ];
+  const DEFAULT_PLAYER_LIMIT = 50;
+  const MIN_SEASON_GAMES = 30;
   const state = {
     seasons: [], current: null, data: null, search: "", position: "", sort: "points",
+    showAllPlayers: false,
     trackedJobs: new Map(), hiddenJobs: new Set(), polling: false,
     timer: null, selectedPlayer: null, deletePlayer: null, loadSequence: 0,
   };
@@ -231,6 +234,7 @@
       }
       renderJobs();
       schedulePoll();
+      return data;
     } catch (error) { if (sequence === state.loadSequence) formError("page-error", errorMessage(error)); }
     finally { if (sequence === state.loadSequence) $(".collection-panel").setAttribute("aria-busy", "false"); }
   }
@@ -264,7 +268,7 @@
   }
 
   function categoryMetrics(category) {
-    return category.key === "national_regular" ? METRICS.slice(0, 4) : METRICS;
+    return ["national_regular", "other"].includes(category.key) ? METRICS.slice(0, 4) : METRICS;
   }
 
   function clubLogos(player) {
@@ -281,7 +285,7 @@
   function bonusNumber(value) { return `${typeof value === "number" && value > 0 ? "+" : ""}${pointNumber(value)}`; }
 
   function bonusOutcome(value) {
-    return ({ winner: "Победа", champion: "Чемпион", finalist: "Финал", runner_up: "Финалист", third: "3-е место", semifinalist: "Полуфинал", semi_final: "Полуфинал", semifinal: "Полуфинал", quarterfinalist: "Четвертьфинал", quarter_final: "Четвертьфинал", quarterfinal: "Четвертьфинал" })[value] || value || "";
+    return ({ winner: "Победа", champion: "Чемпион", finalist: "Финал", runner_up: "Финалист", third: "3-е место", semifinalist: "Полуфинал", semi_final: "Полуфинал", semifinal: "Полуфинал", quarterfinalist: "Четвертьфинал", quarter_final: "Четвертьфинал", quarterfinal: "Четвертьфинал", no_appearances: "Нет сыгранных матчей", outside_top_five: "Вне топ-5 лиг", outside_medium_leagues: "Вне топ-5 и средних лиг" })[value] || value || "";
   }
 
   function pointsAvailability(player) {
@@ -296,10 +300,10 @@
   function seasonPointsTitle(player) {
     const points = player.season_points;
     if (!points) return pointsAvailability(player);
-    const lines = [`Баллы за сезон: ${pointNumber(points.total)}`, `База: ${pointNumber(points.base_points)} · Бонусы: ${bonusNumber(points.bonus_points)}`];
+    const lines = [`Баллы за сезон: ${pointNumber(points.total)}`, `База: ${pointNumber(points.base_points)} · Бонусы / штрафы: ${bonusNumber(points.bonus_points)}`];
     const availability = pointsAvailability(player);
     if (availability) lines.push(availability);
-    lines.push("База = взвешенная оценка × 100. Итог = база + бонусы.");
+    lines.push("База = взвешенная оценка × 100. Итог = база + бонусы − штрафы.");
     for (const bonus of points.bonuses || []) lines.push(`${[bonus.competition, bonus.team, bonusOutcome(bonus.outcome)].filter(Boolean).join(" · ")}: ${bonusNumber(bonus.points)}`);
     for (const item of points.pending || []) lines.push(`${item.competition || "Турнир"}: ${item.reason || "бонус пока не определён"}`);
     return lines.join("\n");
@@ -309,17 +313,15 @@
     const points = player.season_points;
     return el("td", { class: "group-start season-points-col", title: seasonPointsTitle(player) },
       el("span", { class: `season-points-total${points?.total == null ? " missing-value" : ""}` }, pointNumber(points?.total)),
-      typeof points?.bonus_points === "number" && points.bonus_points > 0 ? el("span", { class: "season-points-bonus" }, `${bonusNumber(points.bonus_points)} бонусов`) : null);
+      typeof points?.bonus_points === "number" && points.bonus_points !== 0 ? el("span", { class: "season-points-bonus" }, `${bonusNumber(points.bonus_points)} к базе`) : null);
   }
 
-  function renderTable() {
+  function tablePlayers() {
     const players = state.data?.players || [];
-    const hasPlayers = players.length > 0;
-    $("#empty-state").hidden = hasPlayers;
-    $("#table-toolbar").hidden = !hasPlayers;
-    $("#table-container").hidden = !hasPlayers;
     const query = state.search.trim().toLocaleLowerCase("ru");
-    const filtered = players.filter(player => (!state.position || player.position === state.position) && (!query || [player.name, ...(player.clubs || []).map(club => club.name)].filter(Boolean).join(" ").toLocaleLowerCase("ru").includes(query)));
+    const filtered = players.filter(player => (state.showAllPlayers || (player.total?.games ?? 0) >= MIN_SEASON_GAMES)
+      && (!state.position || player.position === state.position)
+      && (!query || [player.name, ...(player.clubs || []).map(club => club.name)].filter(Boolean).join(" ").toLocaleLowerCase("ru").includes(query)));
     filtered.sort((a, b) => {
       if (state.sort === "name") return String(a.name || "").localeCompare(String(b.name || ""), "ru");
       const sortKey = state.sort === "rating" ? "adjusted_rating" : state.sort;
@@ -329,11 +331,24 @@
       const bn = typeof bv === "number" ? bv : -Infinity;
       return (bn - an) || String(a.name || "").localeCompare(String(b.name || ""), "ru");
     });
+    return filtered;
+  }
+
+  function renderTable() {
+    const players = state.data?.players || [];
+    const hasPlayers = players.length > 0;
+    $("#empty-state").hidden = hasPlayers;
+    $("#table-toolbar").hidden = !hasPlayers;
+    const matching = tablePlayers();
+    const filtered = state.showAllPlayers ? matching : matching.slice(0, DEFAULT_PLAYER_LIMIT);
     $("#no-results").hidden = !hasPlayers || filtered.length !== 0;
+    $("#no-results").textContent = state.showAllPlayers
+      ? "Никого не нашли. Попробуйте другое имя или позицию."
+      : "Никого не нашли. Измените фильтры или включите «Все игроки», чтобы увидеть игроков с менее чем 30 матчами.";
     $("#table-container").hidden = !hasPlayers || filtered.length === 0;
     const categories = visibleCategories();
     const row1 = el("tr", {}, el("th", { rowspan: "2", class: "number-col", scope: "col", "aria-label": "Номер строки", title: "Номер строки в текущем порядке" }, "№"), el("th", { rowspan: "2", class: "player-col", scope: "col" }, "Игрок"));
-    row1.append(el("th", { rowspan: "2", class: "group-start season-points-col", scope: "col", title: "Баллы за сезон: базовая часть по взвешенной оценке и бонусы за результаты. «—» — итог пока не рассчитан." }, "Баллы"));
+    row1.append(el("th", { rowspan: "2", class: "group-start season-points-col", scope: "col", title: "Баллы за сезон: базовая часть по взвешенной оценке, бонусы за результаты и штрафы. «—» — итог пока не рассчитан." }, "Баллы"));
     for (const category of categories) row1.append(el("th", { colspan: String(categoryMetrics(category).length), class: "group-start", scope: "colgroup", title: category.label }, category.short));
     row1.append(el("th", { colspan: "4", class: "group-start total-col", scope: "colgroup" }, "Всего за сезон"), el("th", { rowspan: "2", class: "group-start market-col", scope: "col", title: "Последняя известная стоимость Transfermarkt на конец сезона" }, "Стоимость"));
     const row2 = el("tr");
@@ -391,19 +406,33 @@
     state.timer = window.setTimeout(pollJobs, 1800);
   }
 
+  function completedJobMessage(job, loadedData) {
+    const jobSeason = job.season || job.season_key;
+    const currentData = loadedData && loadedData === state.data
+      && loadedData.season?.key === state.current && jobSeason === state.current;
+    const player = currentData && job.player_id != null
+      ? (loadedData.players || []).find(row => String(row.id) === String(job.player_id)) : null;
+    const name = job.player_name || player?.name;
+    const message = name ? `${name}: данные сохранены.` : "Игрок добавлен в сезон.";
+    if (!player) return message;
+    const index = tablePlayers().findIndex(row => row.id === player.id);
+    return `${message} ${index < 0 ? "Игрок скрыт фильтрами таблицы." : `Место в таблице сезона: ${index + 1}.`}`;
+  }
+
   async function pollJobs() {
     state.timer = null;
     state.polling = true;
     let changed = false;
+    const completed = [];
     const active = [...state.trackedJobs.entries()].filter(([, job]) => ["queued", "running"].includes(job.status));
     await Promise.all(active.map(async ([id, previous]) => {
       try {
         const response = await api(`/api/jobs/${encodeURIComponent(id)}`);
-        const job = response.job || response;
-        state.trackedJobs.set(id, { ...previous, ...job });
+        const job = { ...previous, ...(response.job || response) };
+        state.trackedJobs.set(id, job);
         if (["completed", "failed"].includes(job.status)) {
           changed = true;
-          if (job.status === "completed") toast(job.player_name ? `${job.player_name}: данные сохранены.` : "Игрок добавлен в сезон.");
+          if (job.status === "completed") completed.push(job);
           else toast(job.error || "Загрузка игрока завершилась с ошибкой.", true);
         }
       } catch (error) {
@@ -414,8 +443,10 @@
     state.polling = false;
     renderJobs();
     if (changed) {
-      try { await loadSeasons(); await loadSeason(); }
+      let loadedData;
+      try { await loadSeasons(); loadedData = await loadSeason(); }
       catch (error) { formError("page-error", errorMessage(error)); }
+      for (const job of completed) toast(completedJobMessage(job, loadedData));
       if (state.selectedPlayer && $("#player-dialog").open) {
         const player = (state.data?.players || []).find(row => row.id === state.selectedPlayer);
         if (player) renderPlayer(player);
@@ -539,14 +570,14 @@
       el("div", { class: "points-summary" },
         el("span", {}, "Взвешенная оценка: ", el("strong", {}, number(points?.weighted_rating, 2))),
         el("span", {}, "База: ", el("strong", {}, pointNumber(points?.base_points))),
-        el("span", {}, "Бонусы: ", el("strong", {}, bonusNumber(points?.bonus_points))),
+        el("span", {}, "Бонусы / штрафы: ", el("strong", {}, bonusNumber(points?.bonus_points))),
         el("span", {}, "Всего: ", el("strong", {}, pointNumber(points?.total)))),
-      el("p", { class: "points-formula" }, "Взвешенная оценка = Σ(оценка с поправкой × вес) ÷ Σ(весов) по учтённым матчам. Вес = 1 + сумма надбавок. Каждая оценка с поправкой ограничена 10. База = взвешенная оценка × 100; итог = база + бонусы."),
+      el("p", { class: "points-formula" }, "Взвешенная оценка = Σ(оценка с поправкой × вес) ÷ Σ(весов) по учтённым матчам. Вес = 1 + сумма надбавок. Каждая оценка с поправкой ограничена 10. База = взвешенная оценка × 100; итог = база + бонусы − штрафы."),
       availability ? el("p", { class: "points-explanation" }, availability) : null,
       matchSummary ? el("p", { class: "weights-metadata" }, matchSummary) : null,
       matchWeightsDetail(player),
       rows.length ? el("div", { class: "bonus-table-wrap" }, el("table", { class: "bonus-table" },
-        el("thead", {}, el("tr", {}, ...["Турнир / команда", "Результат", "Бонус"].map(label => el("th", { scope: "col" }, label)))), el("tbody", {}, ...rows))) : null,
+        el("thead", {}, el("tr", {}, ...["Турнир / команда", "Результат", "Бонус / штраф"].map(label => el("th", { scope: "col" }, label)))), el("tbody", {}, ...rows))) : null,
       pending.length ? el("div", { class: "points-pending" }, el("span", {}, "Бонусы пока не определены:"),
         el("ul", {}, ...pending.map(item => el("li", {}, `${item.competition || "Турнир"}: ${item.reason || "нет данных о результате"}`)))) : null);
   }
@@ -647,6 +678,7 @@
   $("#player-search").addEventListener("input", event => { state.search = event.target.value; renderTable(); });
   $("#position-filter").addEventListener("change", event => { state.position = event.target.value; renderTable(); });
   $("#sort-select").addEventListener("change", event => { state.sort = event.target.value; renderTable(); });
+  $("#show-all-players").addEventListener("change", event => { state.showAllPlayers = event.target.checked; renderTable(); });
 
   $("#add-player-form").addEventListener("submit", async event => {
     event.preventDefault();

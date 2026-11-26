@@ -16,7 +16,7 @@ import httpx
 
 from season_ledger.competitions import fotmob_competition_category, is_supercup
 from season_ledger.domain import Season
-from season_ledger.match_context import normalize_team
+from season_ledger.match_context import corroborated_adjacent_match
 
 
 DEFAULT_BASE_URL = "https://www.fotmob.com/api/data/"
@@ -250,17 +250,6 @@ def _competition_days(competitions: list[dict] | None, *, clubs_only: bool = Fal
     return days
 
 
-def _kickoff(value) -> datetime | None:
-    value = value.get("utcTime") if isinstance(value, dict) else value
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
-
-
 def _adjacent_club_match(row: dict, competitions: list[dict]) -> bool:
     """Bridge a source date discrepancy only with one fully corroborated game.
 
@@ -268,33 +257,23 @@ def _adjacent_club_match(row: dict, competitions: list[dict]) -> bool:
     history. Require UTC kickoffs within 24h, both teams, the final score and
     all three player appearance statistics to agree instead.
     """
-    kickoff = _kickoff(row.get("matchDate"))
-    team, opponent = normalize_team(row.get("teamName")), normalize_team(row.get("opponentTeamName"))
-    home = row.get("isHomeTeam")
-    scores = [_integer(row.get(key)) for key in ("homeScore", "awayScore")]
-    statistics = [_integer(row.get(key)) for key in ("minutesPlayed", "goals", "assists")]
-    if (kickoff is None or not team or not opponent or type(home) is not bool
-            or None in scores or None in statistics or row.get("playedInMatch") is not True):
+    if row.get("playedInMatch") is not True:
         return False
-    scored, conceded = scores if home else scores[::-1]
+    appearance = {
+        "kickoff": row.get("matchDate"), "team": row.get("teamName"), "opponent": row.get("opponentTeamName"),
+        "is_home": row.get("isHomeTeam"), "home_score": _integer(row.get("homeScore")),
+        "away_score": _integer(row.get("awayScore")), "minutes": _integer(row.get("minutesPlayed")),
+        "goals": _integer(row.get("goals")), "assists": _integer(row.get("assists")),
+    }
     candidates = []
     for competition in competitions:
         if (competition.get("category") in {"national_regular", "national_major"}
                 or _integer(competition.get("competition_type_id")) in {11, 17, 19, 20}):
             continue
         for match in _array(competition.get("matches")):
-            if not isinstance(match, dict) or (tm_kickoff := _kickoff(match.get("date"))) is None:
-                continue
-            if (abs((kickoff.date() - tm_kickoff.date()).days) != 1
-                    or abs(kickoff - tm_kickoff) > timedelta(hours=24)
-                    or normalize_team(match.get("team") or competition.get("team")) != team
-                    or normalize_team(match.get("opponent")) != opponent
-                    or match.get("game_state") not in {"regularly_terminated", "extra_time", "penalty_shootout",
-                                                       "terminated", "finished", "after_extra_time", "after_penalties"}
-                    or [_integer(match.get(key)) for key in ("goals_for", "goals_against")] != [scored, conceded]
-                    or [_integer(match.get(key)) for key in ("minutes", "goals", "assists")] != statistics):
-                continue
-            candidates.append(match)
+            if isinstance(match, dict) and corroborated_adjacent_match(
+                    appearance, {**match, "team": match.get("team") or competition.get("team")}):
+                candidates.append(match)
     return len(candidates) == 1
 
 

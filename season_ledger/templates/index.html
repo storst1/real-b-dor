@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#102c28">
   <meta name="description" content="Личная коллекция сезонной статистики футболистов из Transfermarkt и FotMob.">
   <title>Сезон · REAL B’DOR</title>
-  <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_versions['app.css'] }}">
+  <script src="/static/app.js?v={{ asset_versions['app.js'] }}" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -27,6 +27,7 @@
         <div class="table-toolbar" id="table-toolbar" hidden>
           <label class="search-field"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg><input id="player-search" type="search" placeholder="Игрок или клуб" aria-label="Найти игрока или клуб"></label>
           <div class="toolbar-filters"><label class="select-wrap"><span class="sr-only">Позиция игрока</span><select id="position-filter"><option value="">Все позиции</option></select></label><label class="select-wrap"><span class="sr-only">Порядок сортировки</span><select id="sort-select"><option value="name">По имени</option><option value="goals">По голам</option><option value="assists">По передачам</option><option value="rating">По оценке</option><option value="points" selected>По баллам</option><option value="value">По стоимости</option></select></label></div>
+          <label class="all-players-switch"><input id="show-all-players" type="checkbox" role="switch" aria-label="Все игроки" aria-describedby="player-limit-help"><span class="switch-copy"><span>Все игроки</span><small id="player-limit-help">По умолчанию: до 50 игроков с 30+ матчами</small></span></label>
           <span class="table-key" title="И — матчи; Оц. — оценка с поправкой на позицию; Г — голы; П — передачи; М — место или стадия">И · Оц. · Г · П · М</span>
         </div>
         <div class="empty-state" id="empty-state">

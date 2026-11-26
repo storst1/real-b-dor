@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from hashlib import sha256
 import os
 from pathlib import Path
 
@@ -69,7 +70,10 @@ def create_app(db_path: str | Path | None = None, *, tm=None, fm=None) -> FastAP
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
-        return templates.get_template("index.html").render()
+        asset_versions = {name: sha256((ROOT / "static" / name).read_bytes()).hexdigest()[:12]
+                          for name in ("app.css", "app.js")}
+        return HTMLResponse(templates.get_template("index.html").render(asset_versions=asset_versions),
+                            headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/seasons")
     async def seasons():

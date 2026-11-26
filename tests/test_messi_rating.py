@@ -69,9 +69,11 @@ def test_supporters_shield_or_conference_rank_does_not_award_an_mls_cup_bonus():
 
     assert result["status"] == "complete"
     assert result["pending"] == []
-    assert result["bonus_points"] == 150
-    assert result["total"] == 950
-    assert [bonus["kind"] for bonus in result["bonuses"]] == ["euro_copa"]
+    assert result["bonus_points"] == 35
+    assert result["total"] == 835
+    assert {bonus["kind"]: bonus["points"] for bonus in result["bonuses"]} == {
+        "euro_copa": 75, "no_champions_league": -25, "outside_top_five": -15,
+    }
 
 
 def test_best_of_three_uses_match_wins_even_when_the_loser_has_more_aggregate_goals():
@@ -86,7 +88,7 @@ def test_best_of_three_uses_match_wins_even_when_the_loser_has_more_aggregate_go
     result = calculate_season_points({"competitions": rows}, weighted_rating=8)
 
     assert result["status"] == "complete"
-    assert result["bonus_points"] == 0
+    assert result["bonus_points"] == -52
     assert result["pending"] == []
 
 
@@ -139,8 +141,8 @@ def test_partial_or_conflicting_mls_evidence_stays_unconfirmed_without_holding_s
     assert all("league_championship" not in row for row in apply_league_championship(rows))
     result = calculate_season_points({"competitions": rows}, weighted_rating=8)
     assert result["status"] == "complete"
-    assert result["bonus_points"] == 0
-    assert result["total"] == 800
+    assert result["bonus_points"] == -52
+    assert result["total"] == 748
     assert result["pending"] == []
 
 
@@ -155,8 +157,8 @@ def test_forged_mls_outcome_metadata_is_discarded_without_holding_season_points_
     result = calculate_season_points({"competitions": rows}, weighted_rating=8)
 
     assert result["status"] == "complete"
-    assert result["bonus_points"] == 0
-    assert result["total"] == 800
+    assert result["bonus_points"] == -52
+    assert result["total"] == 748
     assert result["pending"] == []
 
 
@@ -180,9 +182,11 @@ def test_confirmed_mls_playoff_final_overrides_table_rank_without_a_top_five_bon
 
     assert result["status"] == "complete"
     assert result["pending"] == []
-    assert result["bonus_points"] == 0
-    assert result["total"] == 800
-    assert result["bonuses"] == []
+    assert result["bonus_points"] == -52
+    assert result["total"] == 748
+    assert {bonus["kind"]: bonus["points"] for bonus in result["bonuses"]} == {
+        "no_champions_league": -25, "no_national_team": -12, "outside_top_five": -15,
+    }
 
 
 def test_malformed_final_result_does_not_award_a_championship():
@@ -198,8 +202,8 @@ def test_malformed_final_result_does_not_award_a_championship():
     result = calculate_season_points({"competitions": rows}, weighted_rating=8)
 
     assert result["status"] == "complete"
-    assert result["bonus_points"] == 0
-    assert result["total"] == 800
+    assert result["bonus_points"] == -52
+    assert result["total"] == 748
     assert result["pending"] == []
 
 
@@ -272,8 +276,11 @@ def test_saved_messi_sources_restore_concacaf_and_split_merged_mls_without_losin
     assert weighted["total_weight"] == 9
     assert weighted["rating"] == pytest.approx((8.4 + 8.9 + 7.7 + 8.2 + 8.4 + 7.5 * 4) / 9 / 1.0096)
     assert player["season_points"]["status"] == "complete"
-    assert player["season_points"]["bonus_points"] == 0
-    assert player["season_points"]["total"] == pytest.approx(weighted["rating"] * 100)
+    assert player["season_points"]["bonus_points"] == -40
+    assert {bonus["kind"]: bonus["points"] for bonus in player["season_points"]["bonuses"]} == {
+        "no_champions_league": -25, "outside_top_five": -15,
+    }
+    assert player["season_points"]["total"] == pytest.approx(weighted["rating"] * 100 - 40)
     assert reopened["weighted_rating"] == weighted
     assert reopened["updated_at"] == player["updated_at"]
     assert store.raw(identity) == original

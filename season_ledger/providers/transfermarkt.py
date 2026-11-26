@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 
 _NATIONAL_TYPES = {11, 17, 19, 20}
-_MAJOR_IDS = {"FIWC", "WM", "EURO", "CA", "COPA", "CA16", "GC", "AFR", "ASIA", "AFCON", "AFC", "AFAC"}
+_MAJOR_IDS = {"FIWC", "WM", "EURO", "CA", "COPA", "CA16", "GC", "AFR", "ASIA", "AFCON", "AFC", "AFAC", "AFCN"}
 _STAGES = {"FF": "Финал", "HF": "Полуфинал", "VF": "1/4 финала", "AF": "1/8 финала", "16F": "1/16 финала"}
 _OPTIONAL_ERRORS = (TransfermarktError, httpx.HTTPError, ValueError, TypeError, KeyError)
 

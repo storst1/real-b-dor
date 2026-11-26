@@ -21,6 +21,11 @@ def game(identity, day, competition="L1", kind=1, *, season=2023, goals=0, assis
     }
 
 
+def test_afcon_identity_classifies_the_final_tournament_even_without_a_competition_name():
+    assert category({"competitionId": "AFCN", "competitionTypeId": 11, "isNationalGame": True}) == "national_major"
+    assert category({"competitionId": "AFCQ", "competitionTypeId": 19, "isNationalGame": True}) == "national_regular"
+
+
 def test_valuation_uses_last_observation_before_cutoff_never_current_future():
     data = {"history": [
         {"marketValue": {"value": 110_000_000, "currency": "EUR", "determined": "2023-12-14"}},

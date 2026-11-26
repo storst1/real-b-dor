@@ -121,8 +121,8 @@ def test_aliases_cannot_guess_missing_or_unknown_match_rounds(player, unknown_st
 
 
 @pytest.mark.parametrize("player,tm_id,expected_bonuses", [
-    ("saka", "433177", {"euro_copa": 50}),
-    ("musiala", "580195", {"champions_league": 50}),
+    ("saka", "433177", {"euro_copa": 25}),
+    ("musiala", "580195", {"champions_league": 25, "no_national_team": -12}),
 ])
 def test_saved_saka_and_musiala_recalculate_without_reimport_and_keep_eligible_bonuses(tmp_path, player, tm_id, expected_bonuses):
     snapshot = affected_snapshot(player)

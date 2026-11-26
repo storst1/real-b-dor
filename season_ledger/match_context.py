@@ -1,6 +1,6 @@
 """Use complete FotMob context directly; fill its gaps from Transfermarkt."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import re
 import unicodedata
 
@@ -18,6 +18,24 @@ _TEAM_ALIASES = {
     "darmstadt 98": "darmstadt", "1899 hoffenheim": "hoffenheim",
     "kobenhavn": "copenhagen",
     "bsc young boys": "young boys",
+    "sk sturm graz": "sturm graz",
+    "hsk zrinjski mostar": "zrinjski mostar", "olympiacos piraeus": "olympiacos",
+    "sheriff tiraspol": "sheriff", "sk slavia prague": "slavia prague",
+    "atalanta bc": "atalanta", "club brugge kv": "club brugge",
+    "ac sparta praha": "sparta prague", "stade brestois 29": "brest",
+    "losc lille": "lille", "gnk dinamo zagreb": "dinamo zagreb",
+    "al hilal sfc": "al hilal", "ca boca juniors": "boca juniors",
+    "07 elversberg": "elversberg", "ssv ulm 1846": "ulm",
+    "botafogo de futebol e regatas": "botafogo",
+    "cp cacereno": "cacereno", "bologna fc 1909": "bologna",
+    "ca river plate": "river plate",
+    "esperance tunis": "esperance", "noah yerevan": "noah",
+    "ferencvarosi tc": "ferencvaros", "besiktas jk": "besiktas",
+    "rw essen": "rot weiss essen",
+    "if elfsborg": "elfsborg", "ud poblense": "poblense",
+    "1 fc kaiserslautern": "kaiserslautern",
+    "cd cruz azul": "cruz azul", "club leon": "leon",
+    "basel 1893": "basel", "club necaxa": "necaxa",
     "fluminense football club": "fluminense",
     "bk hacken": "hacken", "teutonia 05 ottensen": "teutonia ottensen",
     "red bull salzburg": "salzburg", "rb salzburg": "salzburg",
@@ -59,6 +77,7 @@ _FOTMOB_COMPETITIONS = {
     "47": ("league", "domestic_league"),
     "54": ("league", "domestic_league"),
     "87": ("league", "domestic_league"),
+    "61": ("league", "domestic_league"),
     "42": ("champions_league", "continental"),
     "74": ("supercup", "continental"),
     "78": ("continental", "continental"),
@@ -79,6 +98,10 @@ _FOTMOB_COMPETITIONS = {
     "114": ("friendly", "national_regular"),
     "10199": ("national_regular", "national_regular"),
     "10607": ("national_regular", "national_regular"),
+    "9806": ("national_regular", "national_regular"),
+    "9807": ("national_regular", "national_regular"),
+    "9808": ("national_regular", "national_regular"),
+    "9809": ("national_regular", "national_regular"),
 }
 _FOTMOB_NAMES = {
     "premier league": ("league", "domestic_league"),
@@ -89,6 +112,7 @@ _FOTMOB_NAMES = {
     "ligue 1": ("league", "domestic_league"),
     "eredivisie": ("league", "domestic_league"),
     "primeira liga": ("league", "domestic_league"),
+    "liga portugal": ("league", "domestic_league"),
     "mls": ("league", "domestic_league"),
     "major league soccer": ("league", "domestic_league"),
     "saudi pro league": ("league", "domestic_league"),
@@ -147,7 +171,11 @@ def canonical_stage(value) -> str | None:
     # These explicit provider codes are distinct from generic matchdays.
     if re.fullmatch(r"[1-7]R(?:E|H|R)?", code):
         return "playoff"
-    stages = {"FF": "final", "HF": "semifinal", "VF": "quarterfinal", "AF": "round_of_16", "16F": "playoff", "PO": "playoff",
+    # Verified 2024/25 TM records use GP for the UEFA league phase and ZRH/
+    # ZRR for the two knockout playoff legs. GP has no first/second-leg form.
+    if code == "GP":
+        return "league"
+    stages = {"FF": "final", "HF": "semifinal", "VF": "quarterfinal", "AF": "round_of_16", "16F": "playoff", "PO": "playoff", "ZR": "playoff",
               "PD": "third_place"}
     if code in stages:
         return stages[code]
@@ -217,12 +245,56 @@ def _identity(value) -> str | None:
     return _text(str(value))
 
 
+def _utc_kickoff(value) -> datetime | None:
+    if isinstance(value, dict):
+        value = value.get("utcTime")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+
+
+def corroborated_adjacent_match(fotmob_match: dict, tm_match: dict) -> bool:
+    """Confirm one game across adjacent UTC dates without changing source data.
+
+    A date allowance alone cannot establish competition phase or season. Both
+    teams, venue, score and all appearance statistics must corroborate the game.
+    Callers must also require a unique candidate in the selected TM history.
+    """
+    kickoff = _utc_kickoff(fotmob_match.get("kickoff") or fotmob_match.get("date"))
+    tm_kickoff = _utc_kickoff(tm_match.get("date"))
+    if (kickoff is None or tm_kickoff is None
+            or abs((kickoff.date() - tm_kickoff.date()).days) != 1
+            or abs(kickoff - tm_kickoff) > timedelta(hours=24)):
+        return False
+    for key in ("team", "opponent"):
+        value = normalize_team(fotmob_match.get(key))
+        if not value or value != normalize_team(tm_match.get(key)):
+            return False
+    home = fotmob_match.get("is_home")
+    if type(home) is not bool or type(tm_match.get("is_home")) is not bool or home != tm_match["is_home"]:
+        return False
+    if tm_match.get("game_state") not in {"regularly_terminated", "extra_time", "penalty_shootout",
+                                          "terminated", "finished", "after_extra_time", "after_penalties"}:
+        return False
+    scores = [_integer(fotmob_match.get(key)) for key in ("home_score", "away_score")]
+    statistics = [_integer(fotmob_match.get(key)) for key in ("minutes", "goals", "assists")]
+    if None in scores or None in statistics:
+        return False
+    return ((scores if home else scores[::-1]) == [_integer(tm_match.get(key)) for key in ("goals_for", "goals_against")]
+            and statistics == [_integer(tm_match.get(key)) for key in ("minutes", "goals", "assists")])
+
+
 def _fotmob_context(match: dict) -> dict | None:
     """Resolve only weights whose necessary facts are present in FotMob.
 
     A missing cup/major stage is not a group stage. In particular FotMob 42
     covers CL qualifying too, so a generic playoff is not enough to call it
-    the main Champions League. These cases still use the TM fallback below.
+    the main Champions League. These cases still use the TM fallback below,
+    including its explicit ZRH/ZRR codes for the main knockout playoff.
     """
     identity = _identity(match.get("competition_id", match.get("leagueId")))
     name = _text(match.get("competition")) or _text(match.get("leagueName"))
@@ -294,13 +366,21 @@ def _context(fotmob_match: dict, competition: dict | None, tm_match: dict | None
     tm_match = tm_match or {}
     code = _text(tm_match.get("stage_code"))
     stage = canonical_stage(code) if code else canonical_stage(fotmob_match.get("stage"))
+    competition_type = _integer(tm_match.get("competition_type_id"))
+    if competition_type is None:
+        competition_type = _integer(competition.get("competition_type_id"))
+    # These are group identifiers in the verified UEFA Nations League feeds,
+    # never generic matchday numbers or a missing knockout-round description.
+    nations_groups = {"UNLA": {"1", "2", "3", "4"}, "UNLB": {"1", "2", "3", "4"},
+                      "UNLC": {"1", "2", "3", "4"}, "UNLD": {"1", "2"}}
+    if (stage is None and code in nations_groups.get(competition.get("id"), set())
+            and competition.get("category") == "national_regular" and competition_type == 11):
+        stage = "group"
     return {
         "competition_id": _identity(competition.get("id")),
         "competition": _text(competition.get("name")) or _text(fotmob_match.get("competition")) or _text(fotmob_match.get("leagueName")),
         "category": _text(competition.get("category")),
-        "competition_type_id": (_integer(tm_match.get("competition_type_id"))
-                                if _integer(tm_match.get("competition_type_id")) is not None
-                                else _integer(competition.get("competition_type_id"))),
+        "competition_type_id": competition_type,
         "stage_code": code,
         "stage": stage,
         "is_knockout": True if stage in _KNOCKOUT_STAGES else False if stage in {"group", "league"} else None,

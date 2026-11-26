@@ -100,7 +100,7 @@ def test_wirtz_opponent_aliases_do_not_merge_distinct_teams(index, suffix):
     assert normalize_team(tm_match["opponent"]) != normalize_team(fm_match["opponent"])
 
 
-def test_saved_wirtz_recalculates_without_reimport_and_awards_only_league_and_cup(tmp_path):
+def test_saved_wirtz_recalculates_league_and_cup_bonuses_with_absence_penalties_without_reimport(tmp_path):
     path = tmp_path / "seasons.sqlite3"
     store = Store(path)
     store.add_season(Season(2023))
@@ -115,8 +115,10 @@ def test_saved_wirtz_recalculates_without_reimport_and_awards_only_league_and_cu
     assert repeated["updated_at"] == reopened["updated_at"] == player["updated_at"]
     points = player["season_points"]
     assert points["status"] == "complete"
-    assert {bonus["kind"]: bonus["points"] for bonus in points["bonuses"]} == {"league": 75, "cup": 25}
-    assert points["bonus_points"] == 100
-    assert points["total"] == pytest.approx(8.3 / 1.0158 * 100 + 100)
+    assert {bonus["kind"]: bonus["points"] for bonus in points["bonuses"]} == {
+        "league": 37, "cup": 12, "no_champions_league": -25, "no_national_team": -12,
+    }
+    assert points["bonus_points"] == 12
+    assert points["total"] == pytest.approx(8.3 / 1.0158 * 100 + 12)
     assert repeated["season_points"] == reopened["season_points"] == points
     assert store.raw(identity) == ({"saved": "tm"}, {"saved": "fm"})

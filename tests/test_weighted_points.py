@@ -28,7 +28,7 @@ class NoFetch:
         raise AssertionError("Saved match weights must be calculated without network imports")
 
 
-@pytest.mark.parametrize(("games", "expected_bonus"), [(2, 0), (14, 0), (15, 75)])
+@pytest.mark.parametrize(("games", "expected_bonus"), [(2, -37), (14, -37), (15, 0)])
 def test_saved_match_weights_feed_final_points_and_preserve_original_sources(tmp_path, games, expected_bonus):
     path = tmp_path / "weighted.db"
     store = Store(path)
@@ -75,4 +75,4 @@ def test_legacy_summary_without_individual_ratings_waits_for_history_not_average
     assert player["season_points"]["status"] == "awaiting_match_history"
     assert player["season_points"]["base_points"] is None
     assert player["season_points"]["total"] is None
-    assert player["season_points"]["bonus_points"] == 0
+    assert player["season_points"]["bonus_points"] == -37

@@ -130,5 +130,6 @@ def test_alvarez_olympic_games_join_real_tm_history_and_keep_weights_without_sen
     assert snapshot["groups"]["national_major"]["games"] == 0
     assert snapshot["groups"]["national_regular"]["games"] == 0
     assert points["status"] == "complete"
-    assert points["bonus_points"] == 0
-    assert points["total"] == pytest.approx(680)
+    assert points["bonus_points"] == -25
+    assert {bonus["kind"]: bonus["points"] for bonus in points["bonuses"]} == {"no_champions_league": -25}
+    assert points["total"] == pytest.approx(655)

@@ -7,14 +7,14 @@ import unicodedata
 from urllib.parse import urlsplit
 
 from .competitions import fotmob_competition_category, is_supercup
-from .match_context import normalize_team
+from .match_context import corroborated_adjacent_match, normalize_team
 from .league_outcomes import apply_league_championship
 
 CATEGORIES = [
     {"key": "domestic_league", "label": "Чемпионат"},
     {"key": "continental", "label": "Лига чемпионов"},
     {"key": "national_regular", "label": "Сборная · остальные"},
-    {"key": "national_major", "label": "ЧМ / Евро / Копа"},
+    {"key": "national_major", "label": "ЧМ / Евро / Копа / КАН"},
     {"key": "domestic_cup", "label": "Кубки страны"},
     {"key": "other", "label": "Другие турниры"},
 ]
@@ -203,21 +203,30 @@ def apply_competition_scope(snapshot: dict) -> dict:
 def _fotmob_rows(rows: list[dict], competitions: list[dict]) -> list[dict]:
     """Repair categories and split verified feeds that merge competition phases.
 
-    FotMob combines MLS regular/playoff games and EURO qualification/playoffs;
-    TM keeps their phases separate. Partition only on unique dated appearances
-    for the same team; unmatched rated games remain missing source data.
+    FotMob combines regular and knockout phases of MLS, UEFA qualification and
+    UEFA/CONCACAF Nations League; TM keeps their phases separate. Partition only on
+    unique dated appearances for the same team; unmatched ratings remain missing
+    source data.
     """
-    merged_phases = {"130": {"MLS1", "POUS"}, "10607": {"EMQ", "POEM"}}
+    merged_phases = {"130": {"MLS1", "POUS"}, "10607": {"EMQ", "POEM"},
+                     "9821": {"CNLA", "CNNF"}, "9806": {"UNLA", "UNFI"},
+                     "10195": {"WMQ6", "POWM"}}
     result = []
     for original in rows:
         rating = deepcopy(original)
-        if category := fotmob_competition_category(rating):
+        # Our FotMob-derived national categories differ from TM's youth
+        # categories: these verified tournaments use "other" (types 17/20).
+        # Bridge only the saved joins here: changing the fetch classification
+        # would make its exhibition-game filter discard these national rows.
+        youth_national = str(rating.get("id")) in {"288", "10437"}
+        category = "other" if youth_national else fotmob_competition_category(rating)
+        if category:
             rating["category"] = category
             for match in rating.get("matches", []):
                 if isinstance(match, dict):
                     match["category"] = category
                     match["is_national"] = (category in {"national_regular", "national_major"}
-                                            or str(rating.get("id")) == "66")
+                                            or str(rating.get("id")) == "66" or youth_national)
         history = rating.get("matches")
         phase_ids = merged_phases.get(str(rating.get("id")), set())
         targets = [row for row in competitions if str(row.get("id")) in phase_ids
@@ -231,6 +240,12 @@ def _fotmob_rows(rows: list[dict], competitions: list[dict]) -> list[dict]:
             day = str(match.get("date") or "")[:10] if isinstance(match, dict) else ""
             selected = [row for row in targets if day and any(
                 str(tm_match.get("date") or "")[:10] == day for tm_match in row.get("matches", []))]
+            if not selected and isinstance(match, dict):
+                adjacent = [(row, tm_match) for row in targets for tm_match in row.get("matches", [])
+                            if isinstance(tm_match, dict) and corroborated_adjacent_match(
+                                match, {**tm_match, "team": tm_match.get("team") or row.get("team")})]
+                if len(adjacent) == 1:
+                    selected = [adjacent[0][0]]
             if len(selected) == 1:
                 partitions[str(selected[0]["id"])].append(match)
             else:
@@ -277,6 +292,13 @@ def combine(tm: dict, fm: dict) -> dict:
         dates = {str(m.get("date", ""))[:10] for m in rating.get("matches", []) if m.get("date")}
         overlapping = [(i, r) for i, r in category_rows if dates.intersection(
             str(m.get("date", ""))[:10] for m in r.get("matches", []) if m.get("date"))]
+        if target is not None and not overlapping:
+            # A verified phase partition can consist entirely of adjacent UTC
+            # dates. Recheck its evidence rather than relabelling source dates.
+            overlapping = [(i, r) for i, r in category_rows if any(
+                sum(corroborated_adjacent_match(m, {**t, "team": t.get("team") or r.get("team")})
+                    for t in r.get("matches", []) if isinstance(t, dict)) == 1
+                for m in rating.get("matches", []) if isinstance(m, dict))]
         # Match dates also bridge different provider spellings of the club.
         # If both sources supply dates, names alone cannot overrule disjoint
         # records (e.g. two editions of the same cup).

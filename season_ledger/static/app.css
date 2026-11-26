@@ -29,6 +29,11 @@ h1{font-size:18px;font-weight:650;letter-spacing:-.025em;margin:0;line-height:30
 .toolbar-filters{display:flex;gap:7px}.select-wrap{position:relative;display:block}
 .select-wrap:after{content:"";position:absolute;width:5px;height:5px;border-right:1px solid #8a9a8e;border-bottom:1px solid #8a9a8e;right:10px;top:calc(50% - 4px);transform:rotate(45deg);pointer-events:none}
 .select-wrap select{appearance:none;border:1px solid #dce4dc;border-radius:4px;background:#fff;color:#607966;padding:4px 26px 4px 9px;height:28px;font-size:13px;cursor:pointer;max-width:100%}
+.all-players-switch{display:inline-flex;align-items:center;gap:7px;flex-shrink:0;min-height:28px;color:#607966;font-size:13px;cursor:pointer}
+.all-players-switch input{appearance:none;position:relative;flex-shrink:0;width:30px;height:18px;margin:0;border:1px solid #bdcec1;border-radius:12px;background:#e7ece7;cursor:pointer}
+.all-players-switch input:after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;box-shadow:0 1px 2px #283a3133}
+.all-players-switch input:checked{background:var(--green);border-color:var(--green)}.all-players-switch input:checked:after{left:14px}
+.switch-copy{display:flex;flex-direction:column;gap:1px;line-height:14px}.switch-copy small{color:var(--muted);font-size:11px;line-height:13px}
 .table-key{margin-left:auto;color:#96a299;font-size:12px;white-space:nowrap}
 .table-container{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:#bdcec1 #f4f7f3}
 .season-table{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;font-variant-numeric:tabular-nums}

@@ -25,7 +25,8 @@ _NAMED_SUPERCUP = re.compile(
 # FotMob IDs confirmed by stored match histories. These repair old derived
 # categories too; numeric source IDs are never Transfermarkt type IDs.
 _FOTMOB_CATEGORIES = {"66": "other", "130": "domestic_league", "141": "domestic_cup",
-                      "290": "national_major", "297": "continental"}
+                      "290": "national_major", "297": "continental",
+                      "9875": "continental", "10043": "continental"}
 _FOTMOB_CATEGORY_NAMES = {
     "mls": "domestic_league", "major league soccer": "domestic_league",
     "coppa italia": "domestic_cup", "italy cup": "domestic_cup",

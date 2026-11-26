@@ -193,8 +193,8 @@ def test_store_recovers_lautaro_coppa_from_raw_sources_without_reimport(tmp_path
     assert restored["weighted_rating"]["rated_games"] == restored["weighted_rating"]["included_games"] == 3
     assert "4301267" in {match["id"] for match in restored["weighted_rating"]["matches"]}
     assert restored["season_points"]["status"] == "complete"
-    assert {bonus["kind"]: bonus["points"] for bonus in restored["season_points"]["bonuses"]} == {"league": 75, "euro_copa": 150}
-    assert restored["season_points"]["total"] == pytest.approx(restored["weighted_rating"]["rating"] * 100 + 225)
+    assert {bonus["kind"]: bonus["points"] for bonus in restored["season_points"]["bonuses"]} == {"league": 37, "euro_copa": 75}
+    assert restored["season_points"]["total"] == pytest.approx(restored["weighted_rating"]["rating"] * 100 + 112)
     assert repeated["weighted_rating"] == restored["weighted_rating"]
     assert repeated["updated_at"] == restored["updated_at"]
     assert store.raw(identity) == (original_tm, original_fm)

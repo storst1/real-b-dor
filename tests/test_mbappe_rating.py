@@ -175,9 +175,9 @@ def test_saved_mbappe_recalculates_without_reimport_and_applies_bonus_participat
     points = player["season_points"]
     assert points["status"] == "complete"
     assert {bonus["kind"]: bonus["points"] for bonus in points["bonuses"]} == {
-        "league": 75, "cup": 25,
+        "league": 37, "cup": 12,
     }
-    assert points["bonus_points"] == 100
-    assert points["total"] == pytest.approx((7 * 2 + 8.5 * 2 + 9.8) / 5 * 100 + 100)
+    assert points["bonus_points"] == 49
+    assert points["total"] == pytest.approx((7 * 2 + 8.5 * 2 + 9.8) / 5 * 100 + 49)
     assert repeated["season_points"] == reopened["season_points"] == points
     assert store.raw(identity) == ({"saved": "tm"}, {"saved": "fm"})

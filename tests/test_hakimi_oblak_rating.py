@@ -141,8 +141,11 @@ def test_saved_oblak_sources_recalculate_without_dropping_either_feyenoord_ratin
     assert reopened["weighted_rating"] == first["weighted_rating"]
     assert reopened["updated_at"] == first["updated_at"]
     assert first["season_points"]["status"] == "complete"
-    assert first["season_points"]["bonus_points"] == 25
-    assert first["season_points"]["total"] == pytest.approx(7.25 / .9253 * 100 + 25)
+    assert first["season_points"]["bonus_points"] == 0
+    assert {bonus["kind"]: bonus["points"] for bonus in first["season_points"]["bonuses"]} == {
+        "champions_league": 12, "no_national_team": -12,
+    }
+    assert first["season_points"]["total"] == pytest.approx(7.25 / .9253 * 100)
     assert store.raw(identity) == (tm, fm)
 
 
@@ -244,5 +247,6 @@ def test_hakimi_friendlies_source_gap_is_visible_without_inventing_a_sierra_leon
     assert {match["id"] for match in player["weighted_rating"]["matches"]} == {
         match["id"] for row in fm["competitions"] for match in row["matches"]
     }
-    assert player["season_points"]["bonus_points"] == 0
+    assert player["season_points"]["bonus_points"] == -25
+    assert {bonus["kind"]: bonus["points"] for bonus in player["season_points"]["bonuses"]} == {"no_champions_league": -25}
     assert store.raw(identity) == original

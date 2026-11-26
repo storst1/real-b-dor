@@ -122,8 +122,11 @@ def test_saved_rodri_snapshot_recalculates_on_repeated_store_reads_without_reimp
     assert repeated["weighted_rating"] == reopened["weighted_rating"] == first["weighted_rating"]
     assert repeated["updated_at"] == reopened["updated_at"] == first["updated_at"]
     assert reopened["season_points"]["status"] == "complete"
-    assert reopened["season_points"]["bonus_points"] == 0
-    assert reopened["season_points"]["total"] == pytest.approx(7.76 / 1.0021 * 100)
+    assert reopened["season_points"]["bonus_points"] == -37
+    assert {bonus["kind"]: bonus["points"] for bonus in reopened["season_points"]["bonuses"]} == {
+        "no_champions_league": -25, "no_national_team": -12,
+    }
+    assert reopened["season_points"]["total"] == pytest.approx(7.76 / 1.0021 * 100 - 37)
     assert store.raw(identity) == ({"saved": "tm"}, {"saved": "fm"})
 
 
